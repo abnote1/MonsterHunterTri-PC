@@ -1,0 +1,26 @@
+--- a/event_scheduler.h
++++ b/event_scheduler.h
+@@ -1,4 +1,5 @@
+ #pragma once
++// tools/gx-pipeline: copia con port_only_recurring/port_rebase (guardado rapido).
+ #include <cstdint>
+ #include <functional>
+ #include <vector>
+@@ -43,6 +44,17 @@
+     uint64_t now() const { return m_now; }
+     uint64_t next_due() const { return m_heap.empty() ? std::numeric_limits<uint64_t>::max() : m_heap.front().due; }
+ 
++    // tools/gx-pipeline (guardado rapido): punto tranquilo = solo eventos periodicos.
++    bool port_only_recurring() const { for (const auto& e : m_heap) if (!e.period) return false; return true; }
++    // Tras cargar: se descartan los eventos de un solo disparo de la sesion actual y
++    // los periodicos conservan su tiempo restante respecto al nuevo reloj.
++    void port_rebase(uint64_t new_now) {
++        std::vector<Event> keep;
++        for (auto& e : m_heap) if (e.period) { const uint64_t rel = e.due > m_now ? e.due - m_now : 0; e.due = new_now + rel; keep.push_back(std::move(e)); }
++        m_heap.clear(); m_now = new_now;
++        for (auto& e : keep) push(std::move(e));
++    }
++
+ private:
+     struct Event {
+         uint64_t due;

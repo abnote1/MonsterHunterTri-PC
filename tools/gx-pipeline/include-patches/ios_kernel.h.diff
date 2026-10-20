@@ -1,0 +1,35 @@
+--- a/ios_kernel.h
++++ b/ios_kernel.h
+@@ -1,4 +1,5 @@
+ #pragma once
++// tools/gx-pipeline: copia con port_get_fds/port_set_fds (guardado rapido).
+ #include "runtime/ios_device.h"
+ #include <memory>
+ #include <vector>
+@@ -23,6 +24,26 @@
+     int32_t ioctl(CPUContext& ctx, const IpcRequest& req);
+     int32_t ioctlv(CPUContext& ctx, const IpcRequest& req);
+ 
++    // tools/gx-pipeline (guardado rapido): tabla de descriptores por indice de dispositivo.
++    struct PortFd { int32_t device = -1; int32_t internal_fd = 0; uint8_t in_use = 0; };
++    std::vector<PortFd> port_get_fds() const {
++        std::vector<PortFd> out;
++        for (const auto& f : m_fds) {
++            PortFd p; p.internal_fd = f.internal_fd; p.in_use = f.in_use ? 1 : 0;
++            for (size_t i = 0; i < m_devices.size(); ++i) if (m_devices[i].get() == f.device) p.device = int32_t(i);
++            out.push_back(p);
++        }
++        return out;
++    }
++    void port_set_fds(const std::vector<PortFd>& in) {
++        m_fds.clear();
++        for (const auto& p : in) {
++            FdEntry f; f.internal_fd = p.internal_fd; f.in_use = p.in_use != 0;
++            f.device = (p.device >= 0 && size_t(p.device) < m_devices.size()) ? m_devices[size_t(p.device)].get() : nullptr;
++            if (!f.device) f.in_use = false;
++            m_fds.push_back(f);
++        }
++    }
+ private:
+     IOSKernel() = default;
+ 

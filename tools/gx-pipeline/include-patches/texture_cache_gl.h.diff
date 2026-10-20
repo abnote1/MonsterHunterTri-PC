@@ -1,0 +1,27 @@
+--- a/texture_cache_gl.h
++++ b/texture_cache_gl.h
+@@ -1,4 +1,5 @@
+ #pragma once
++#include <string>
+ 
+ #include <glad/glad.h>
+ #include "runtime/cpu_context.h"
+@@ -85,6 +86,8 @@
+     // written, decoding it would show garbage).
+     void register_efb_texture(uint32_t addr, GLuint tex);
+     GLuint find_efb_texture(uint32_t addr) const;
++    // tools/gx-pipeline (guardado rapido): registro completo de copias EFB.
++    std::unordered_map<uint32_t, GLuint>& port_efb_textures() { return efb_textures; }
+ 
+     void clear();
+ 
+@@ -105,7 +108,9 @@
+         GLuint texture;
+         std::list<TextureKey>::iterator recency;
+         std::vector<uint8_t> source, palette;
++        std::string hd_pending;   // tools/gx-pipeline: textura HD decodificandose en segundo plano
+     };
++    void port_hd_upgrade(CachedTexture& e, uint32_t w, uint32_t h);
+     std::unordered_map<TextureKey, CachedTexture, TextureKeyHash> cache;
+     std::list<TextureKey> recency;
+     Statistics stats;

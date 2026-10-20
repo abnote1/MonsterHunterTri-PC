@@ -1,0 +1,32 @@
+project_name = "MonsterHunterTri"
+input_game_dir = "C:/ruta/a/MonsterHunterTri-PC/game/DATA"
+output_dir = "C:/ruta/a/MonsterHunterTri-PC/export"
+runtime_source_dir = "C:/Users/TU_USUARIO/AppData/Local/Programs/NWiiRecomp/source/nWiiRuntime"
+sdk_sigdb = "C:/Users/TU_USUARIO/AppData/Local/Programs/NWiiRecomp/source/third_party/dolphin-sigdb/totaldb.dsy"
+symbols_csv = ""
+split_output = true
+instructions_per_file = 12000
+
+[system]
+platform = "Wii"
+
+[game]
+id = "RMHE08"
+
+[graphics]
+backend = "OpenGL"
+window_width = 1280
+window_height = 720
+vsync = true
+sharp_pixels = false
+keep_aspect = true
+widescreen = true
+internal_scale = 2
+
+[input]
+mode = 6
+
+[hle]
+ext_interrupt_dispatch = 0x804D1140
+
+sched_lock_offset = 14992

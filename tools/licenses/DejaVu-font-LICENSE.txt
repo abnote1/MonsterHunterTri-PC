@@ -1,0 +1,11 @@
+tools/gx-pipeline/port_menu_font.h contiene un atlas de glifos generado a partir de
+la fuente DejaVu Sans (32 px).
+
+Fonts are (c) Bitstream (see below). DejaVu changes are in public domain.
+Glyphs imported from Arev fonts are (c) Tavmjong Bah.
+
+Bitstream Vera Fonts Copyright (c) 2003 by Bitstream, Inc. All Rights Reserved.
+Bitstream Vera is a trademark of Bitstream, Inc.
+
+Licencia completa (Bitstream Vera / DejaVu):
+https://dejavu-fonts.github.io/License.html

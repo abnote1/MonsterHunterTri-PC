@@ -1,0 +1,66 @@
+﻿MONSTER HUNTER TRI - PORT PARA PC (kit de instalación)
+======================================================
+
+Este kit NO incluye el juego. Crea el port a partir de TU copia de
+Monster Hunter Tri de Wii y, si quieres, del paquete de texturas HD que
+hayas descargado tú.
+
+QUÉ NECESITAS
+-------------
+- Tu copia del juego, VERSIÓN AMERICANA (identificador RMHE08), en
+  .iso, .wbfs, .rvz, .wia, .gcz o .ciso. Las versiones europea (RMHP08)
+  y japonesa (RMHJ08) no sirven. Si está dentro de un .zip/.7z, descomprímela.
+  Copias NKit o modificadas pueden no funcionar (el instalador lo comprueba).
+- Opcional: el paquete de texturas HD (por ejemplo TRI-HD, para Dolphin) en
+  .zip/.7z/.rar o ya descomprimido. Solo se cargan las texturas PNG.
+- Windows 10/11 de 64 bits, tarjeta gráfica con OpenGL 3.3 y unos 4 GB libres.
+
+INSTALAR
+--------
+1. Copia esta carpeta donde quieras tener el juego (por ejemplo D:\Juegos\MHTri).
+2. Doble clic en Instalar.cmd (o arrastra el ISO y el paquete HD encima).
+3. Elige los archivos que te pide. El instalador:
+   - comprueba que tu copia es la correcta,
+   - instala el runtime de Visual C++ si falta (te pregunta antes),
+   - extrae el juego en game\ (unos minutos),
+   - copia las texturas HD a texturas_hd\.
+4. Juega con MonsterHunterTri.exe. Menú del port: tecla P (o Back + Start en
+   el mando). Ver CONTROLES.md.
+   Si algo falla, usa "Jugar con registro.cmd" y guarda el archivo de logs\.
+
+Para añadir las texturas HD más tarde, vuelve a ejecutar Instalar.cmd: si el
+juego ya está extraído no hace falta repetirlo.
+
+STEAM DECK
+----------
+El instalador funciona en Windows. Instala en un PC y copia la carpeta entera
+a la Deck (por USB, microSD o red), por ejemplo a /home/deck/Games/MonsterHunterTri.
+1. Modo Escritorio > Steam > Juegos > "Añadir un juego que no es de Steam a mi
+   biblioteca" > Explorar > filtro "Todos los archivos" > MonsterHunterTri.exe.
+2. Propiedades > Compatibilidad > "Forzar el uso de una herramienta de
+   compatibilidad de Steam Play" > Proton Experimental.
+3. Ábrelo desde Modo Juego. La Deck funciona como un mando de Xbox; el menú
+   del port se abre con View + Menu a la vez.
+4. La primera vez se crean ajustes propios (ajustes_port_deck.ini): 2x y
+   pantalla completa. Si no se mantiene a 30 FPS, baja a 1x en P > Gráficos.
+5. Si algo falla: Propiedades > Opciones de lanzamiento: PROTON_LOG=1 %command%
+
+GUARDADO EN LA NUBE (DROPBOX)
+-----------------------------
+Opcional. Cada persona usa su propia app de Dropbox: los pasos están en
+CONTROLES.md (crear la app, poner su clave en dropbox_clave.txt y pulsar
+"Conectar con Dropbox" en el menú del port).
+
+PARTIDAS
+--------
+- nand\               partida del propio juego
+- guardados_rapidos\  ranuras F5 / F8
+- ajustes_port.ini    ajustes del PC;  ajustes_port_deck.ini  ajustes de la Deck
+
+CRÉDITOS Y LICENCIAS
+--------------------
+- herramientas\DolphinTool.exe y game\dsp_coef.bin vienen del emulador Dolphin
+  (GPL v2 o posterior): https://github.com/dolphin-emu/dolphin
+  Licencia en herramientas\Dolphin-COPYING.txt.
+- El paquete de texturas HD es obra de sus autores: descárgalo de su página
+  oficial y respeta sus condiciones.
