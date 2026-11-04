@@ -7,6 +7,7 @@
 // con los de aqui; si no coinciden, se sigue usando el del juego y se avisa en el registro.
 //   NWII_THP_NATIVE=0  desactiva el decodificador nativo
 #include "port_thp_decode.h"
+#include "port_perf.h"
 #include "runtime/cpu_context.h"
 #include <condition_variable>
 #include <cstdio>
@@ -74,6 +75,7 @@ struct Job {
 };
 static Job& J() { static Job* j = new Job; return *j; }   // nunca se destruye (el hilo sigue esperando al salir)
 static void Worker() {
+  port_perf::PinHelper();
   Job& j = J();
   for (;;) {
     const uint8_t* data; size_t size; uint8_t *y, *u, *v;

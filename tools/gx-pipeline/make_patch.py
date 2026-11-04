@@ -703,9 +703,11 @@ assert rg.count(_a1)==1
 rg=rg.replace(_a1,r"""// tools/gx-pipeline: cache de sombreadores en disco. Cada sombreador nuevo se anade a
 // cache_sombreadores.bin; al arrancar se compilan todos los conocidos (el juego usa unos
 // pocos), asi no hay parones la primera vez que aparece un efecto. La cache se descarta
-// si el ejecutable es de otra compilacion (el generador de sombreadores pudo cambiar).
+// si cambia el generador de sombreadores (huella de renderer_gl.cpp + tev_shader_gen.cpp que pone
+// make_patch.py). Antes se descartaba en cada compilacion (fecha y hora) y tras cada cambio del port
+// volvian los parones de compilar sombreadores (hasta 0,9 s cada uno la primera vez).
 static const char* kPortShaderFile = "cache_sombreadores.bin";
-static std::string PortShaderBuildId() { return std::string("MHSC1 ") + __DATE__ + " " + __TIME__; }
+static std::string PortShaderBuildId() { return std::string("MHSC2 ") + "__PORT_SHADER_ID__"; }   // huella del generador (make_patch.py)
 static void PortFillShader(GLShader& sh) {
   for (int i = 0; i < 8; i++) {
     sh.uTex[i] = glGetUniformLocation(sh.id, ("uTex" + std::to_string(i)).c_str());
@@ -962,6 +964,81 @@ rep('        auto rect=nwii::runtime::FitPresentation(draw_w,draw_h,presentation
     '        auto rect=port_menu::FitRect(draw_w,draw_h);\n')
 rep('        glBlitFramebuffer(source.x,source.y,source.x+source.width,source.y+source.height,rect.x,rect.y,rect.x+rect.width,rect.y+rect.height,\n                          GL_COLOR_BUFFER_BIT,presentation.sharp_pixels?GL_NEAREST:GL_LINEAR);\n',
     '        if (!port_menu::PresentFXAA(efb_tex, efb_width, efb_height, source, rect))\n        glBlitFramebuffer(source.x,source.y,source.x+source.width,source.y+source.height,rect.x,rect.y,rect.x+rect.width,rect.y+rect.height,\n                          GL_COLOR_BUFFER_BIT,port_menu::UseNearest(source,rect)?GL_NEAREST:GL_LINEAR);\n')
+# rendimiento: tiempo de CPU por hilo en [STAT] (port_perf) y registro a archivo en la Steam Deck
+rep('#include "port_menu.h"\n', '#include "port_menu.h"\n#include "port_perf.h"\n#include <algorithm>\n#include <ctime>\n#ifdef _WIN32\n#include <io.h>\n#endif\n')
+rep('int main(int argc, char **argv) {\n', """int main(int argc, char **argv) {
+  // tools/gx-pipeline: en la Steam Deck (o con NWII_LOG_FILE=1) el registro va a logs/juego-FECHA.log
+  // junto al ejecutable, con el registro de tirones activado. Se guardan los 10 ultimos.
+  if (port_menu::OnSteamDeck() || std::getenv("NWII_LOG_FILE")) {
+    std::filesystem::path base;
+    if (char* b = SDL_GetBasePath()) { base = std::filesystem::u8path(b); SDL_free(b); }
+    std::error_code lec;
+    const auto logs = base / "logs";
+    std::filesystem::create_directories(logs, lec);
+    std::vector<std::filesystem::path> old;
+    for (auto& e : std::filesystem::directory_iterator(logs, lec))
+      if (e.path().filename().string().rfind("juego-", 0) == 0 && e.path().extension() == ".log") old.push_back(e.path());
+    std::sort(old.begin(), old.end());
+    for (size_t i = 0; i + 9 < old.size(); ++i) std::filesystem::remove(old[i], lec);
+    char stamp[32]; const std::time_t now = std::time(nullptr); std::tm tmv{};
+#ifdef _WIN32
+    localtime_s(&tmv, &now);
+#else
+    localtime_r(&now, &tmv);
+#endif
+    std::strftime(stamp, sizeof(stamp), "%Y%m%d-%H%M%S", &tmv);
+    const std::string file = (logs / ("juego-" + std::string(stamp) + ".log")).string();
+    if (std::freopen(file.c_str(), "w", stdout)) {
+      std::setvbuf(stdout, nullptr, _IOFBF, 1 << 16);
+#ifdef _WIN32
+      _dup2(_fileno(stdout), _fileno(stderr));
+      if (!std::getenv("NWII_HITCH_LOG")) _putenv("NWII_HITCH_LOG=1");
+#endif
+      std::printf("[Registro] %s (Steam Deck=%d)\\n", file.c_str(), int(port_menu::OnSteamDeck()));
+    }
+  }
+  port_perf::Mark(port_perf::kMain);
+  std::printf("[Version] port compilado %s %s (memoria nativa, sondeo 1/32)\\n", __DATE__, __TIME__);
+  std::printf("[Nucleos] %s\\n", port_perf::AffinityInfo());
+""")
+rep('  nwii::runtime::g_ctx_ptr = ctx;\n  std::cout << "[Thread] CPU Core started.', '  nwii::runtime::g_ctx_ptr = ctx;\n  port_perf::Mark(port_perf::kGuest);\n  if (std::getenv("NWII_CPU_SAMPLE")) port_perf::StartSampler(&ctx->pc);\n  std::cout << "[Thread] CPU Core started.')
+rep("          stat_line << '\\n';\n          std::cout << stat_line.str();\n", """          {
+            static double s_pg = 0, s_pm = 0, s_px = 0, s_pp = 0, s_pi = 0;
+            const double idle = double(port_perf::IdleUs()) / 1000.0;
+            stat_line << std::dec << " juego_libre=" << int((idle - s_pi) * 100 / double(sample_ms > 0 ? sample_ms : 1)) << "%";
+            s_pi = idle;
+            {
+              static uint64_t s_ic = 0;
+              const uint64_t ic = nwii::runtime::g_ctx_ptr ? nwii::runtime::g_ctx_ptr->inst_count : 0;
+              const double sec = double(sample_ms > 0 ? sample_ms : 1) / 1000.0;
+              // instrucciones del juego por segundo y velocidad de su reloj frente al real (100 % = al dia)
+              stat_line << " instr_juego=" << uint64_t(double(ic - s_ic) / sec / 1e6) << "M/s reloj_juego=" << int(double(ic - s_ic) / (40500000.0 * sec) * 100.0) << "%";
+              s_ic = ic;
+            }
+            const double g = port_perf::ThreadMs(port_perf::kGuest), m = port_perf::ThreadMs(port_perf::kMain);
+            const double x = port_perf::ThreadMs(port_perf::kGx), p = port_perf::ProcessMs();
+            const double span = double(sample_ms > 0 ? sample_ms : 1);
+            stat_line << std::dec << " cpu_juego=" << int((g - s_pg) * 100 / span) << "% cpu_render=" << int((m - s_pm) * 100 / span)
+                      << "% cpu_gx=" << int((x - s_px) * 100 / span) << "% cpu_proceso=" << int((p - s_pp) * 100 / span)
+                      << "%/" << port_perf::Cores() * 100 << "%";
+            s_pg = g; s_pm = m; s_px = x; s_pp = p;
+          }
+          stat_line << '\\n';
+          std::cout << stat_line.str();
+          std::cout.flush(); std::fflush(stdout);
+""")
+# Ritmo de presentacion: esperar al siguiente cuadro del juego en vez de a una rejilla de 60 Hz
+# (ver PortWaitFrameUntil en pipeline_tail.inc).
+_pz="        std::this_thread::sleep_until(pacer.deadline());\n"
+assert mn.count(_pz)==1, 'pace'
+mn=mn.replace(_pz, "        void PortWaitFrameUntil(std::chrono::steady_clock::time_point);\n        PortWaitFrameUntil(pacer.deadline());\n")
+_dk="          extern void DSP_LogAudioStats();\n"
+assert mn.count(_dk)==1, 'deck info'
+mn=mn.replace(_dk, "          { static uint64_t s_ip = 0; const uint64_t ip = nwii::runtime::g_port_interp_steps; std::printf(\"[Interprete] entradas=%llu en 5 s directas=%d\\n\", (unsigned long long)(ip - s_ip), int(nwii::runtime::g_port_dcalls)); s_ip = ip; }\n"+_dk)
+mn=mn.replace(_dk, "          if (port_menu::OnSteamDeck() || std::getenv(\"NWII_DECK_INFO\")) { static const std::string d0 = port_perf::DeckInfo(); if (!d0.empty()) std::printf(\"[Deck] %s\\n\", port_perf::DeckInfo().c_str()); }\n"+_dk)
+_sw="        SDL_GL_SwapWindow(window);\n"
+assert mn.count(_sw)==1, 'swap'
+mn=mn.replace(_sw, "        { void PortPaceBeforeSwap(); PortPaceBeforeSwap(); }   // ritmo del VI (pipeline_tail.inc)\n"+_sw)
 (pathlib.Path(__file__).parent/'main.cpp').write_text(mn.replace('\n','\r\n'),newline='')
 print('ok main.cpp')
 
@@ -995,10 +1072,12 @@ tc=tc.replace(o_tc,"""    const auto port_t0=std::chrono::steady_clock::now();
     }
     if(!hd_loaded) {
         Image img;
+        const auto port_d0=std::chrono::steady_clock::now();
         if(ram) {
             const TextureReadView view{stage.base_addr,stage.tlut_offset,&source,&palette};
             TextureReadScope scope(view);img=decode_texture(ctx,stage);
         } else img=decode_texture(ctx,stage);
+        port_menu::g_prof_decode_us+=uint64_t(std::chrono::duration_cast<std::chrono::microseconds>(std::chrono::steady_clock::now()-port_d0).count());
         glTexImage2D(GL_TEXTURE_2D,0,GL_RGBA,stage.width,stage.height,0,GL_RGBA,GL_UNSIGNED_BYTE,img.data);
         UnloadImage(img);
     }
@@ -1244,6 +1323,44 @@ void PortState_ios(port_state::IO& io) {
   io.pod(nwii::runtime::g_ipc_reply_pending); io.pod(nwii::runtime::g_ipc_interrupt_delay);
 }
 '''
+# rendimiento: el juego, ocioso en el bucle de espera del planificador del SO (0x804D3E38, ningun
+# hilo listo), giraba en vacio hasta el siguiente evento. Ahora duerme hasta poco antes (<=2 ms)
+# si va por delante del reloj real: libera el nucleo (en la Steam Deck, energia para el resto).
+# NWII_IDLE_SLEEP=0 vuelve a girar.
+_i0="bool process_pending_callbacks(CPUContext &ctx) {\n  if (port_menu::g_paused.load(std::memory_order_relaxed)) PortMenuPauseWait(ctx);\n"
+assert t.count(_i0)==1, 'idle'
+t=t.replace(_i0, """static void PortIdleWait(CPUContext &ctx) {
+  static const bool spin = [] { const char* e = std::getenv("NWII_IDLE_SLEEP"); return e && e[0] == '0'; }();
+  if (spin || ctx.in_callback || !ctx.cr[0].eq || ctx.vblank_pending.load(std::memory_order_relaxed) ||
+      ctx.pending_cb_count.load(std::memory_order_relaxed) != 0 || g_ipc_interrupt_delay != 0 ||
+      nwii::runtime::hw::g_di_interrupt_delay != 0 ||
+      (nwii::runtime::hw::pi_intsr.load(std::memory_order_relaxed) & nwii::runtime::hw::pi_intmr.load(std::memory_order_relaxed)) != 0)
+    return;
+  if (ctx.mmu.read32(ctx.gpr[13] - 14984) != 0) return;   // hay hilos listos
+  const int64_t wus = std::chrono::duration_cast<std::chrono::microseconds>(std::chrono::steady_clock::now() - ctx.tb_start).count();
+  if (wus <= 0) return;
+  const uint64_t wall = uint64_t(wus) / 1000000 * ctx.tb_freq + uint64_t(wus) % 1000000 * ctx.tb_freq / 1000000;
+  if (ctx.inst_count <= wall) return;   // el juego va por detras del reloj real: no dormir
+  static EventScheduler& sch = EventScheduler::get();
+  uint64_t due = sch.next_due();
+  if (ctx.dec_irq_pending) { const uint64_t d = ctx.dec_written_tb + ctx.dec_value; if (d < due) due = d; }
+  if (due <= wall) return;
+  const uint64_t us = (due - wall) * 1000000ull / ctx.tb_freq;
+  if (us < 300) return;
+  ::PortFifoKick();   // el lector del FIFO, a trabajar mientras el juego duerme
+  const auto t0 = std::chrono::steady_clock::now();
+  ::port_perf::SleepUs(uint32_t(std::min<uint64_t>(us - 150, 2000)));
+  ::port_perf::AddIdleUs(uint64_t(std::chrono::duration_cast<std::chrono::microseconds>(std::chrono::steady_clock::now() - t0).count()));
+}
+"""+_i0+"  if (ctx.pc == 0x804D3E38) PortIdleWait(ctx);\n")
+# hora del host de cada retrazado del VI, para presentar al ritmo del VI (pipeline_tail.inc)
+_vl="              vi_period, [](CPUContext& c, uint64_t) {\n"
+assert t.count(_vl)==1, 'vi lambda'
+t=t.replace(_vl, "              vi_period, [](CPUContext& c, uint64_t late) {\n"
+  "                  { const uint64_t tb = c.read_timebase() - late;\n"
+  "                    ::PortViTick(std::chrono::duration_cast<std::chrono::nanoseconds>(c.tb_start.time_since_epoch()).count() +\n"
+  "                        int64_t(tb / c.tb_freq) * 1000000000LL + int64_t((tb % c.tb_freq) * 1000000000ULL / c.tb_freq)); }\n")
+t='#include "port_perf.h"\nvoid PortFifoKick();\nvoid PortViTick(int64_t);\n'+t
 _out('ios.cpp', t)
 
 # --- fifo_parser.cpp: estado del lector (matrices, XF, BP) y vaciado de caches
@@ -1381,6 +1498,13 @@ static void ParallelDecodeDraws(std::vector<nwii::runtime::gx::GXCommand>& frame
 anchor="static bool PrepareGXFrame(std::vector<nwii::runtime::gx::GXCommand>& out_frame) {"
 assert t.count(anchor)==1
 t=t.replace(anchor, pool+anchor)
+_ps='            uint64_t seen = 0;\n'
+assert t.count(_ps)==1, 'pool'
+t=t.replace(_ps,_ps+'            port_perf::PinHelper();\n')
+_w='static void GXPipelineWorker() {\n'
+assert t.count(_w)==1, 'worker'
+t=t.replace(_w, _w+'    port_perf::Mark(port_perf::kGx);\n')
+t='#include "port_perf.h"\n'+t
 _out('gx.cpp', t)
 
 
@@ -1425,6 +1549,125 @@ t=t.replace(_g0,_g0+"""    {
 """)
 _out('gx.cpp', t)
 
+# --- gx.cpp: escrituras al FIFO grafico agrupadas ---
+# Cada escritura del juego al FIFO (decenas de miles por cuadro) comprobaba la redireccion a RAM,
+# tomaba el cerrojo y metia byte a byte en g_hw_fifo. Ahora, sin redireccion, se acumulan en un
+# bufer del hilo del juego que se vuelca al llegar a 8 KB, en cada sondeo real de interrupciones y
+# antes de cualquier acceso a registros (HW_Reg_*), que es cuando el juego puede esperar a la GPU.
+# NWII_WGP_BATCH=0 vuelve al camino original.
+t=_reread('gx.cpp')
+_w8="void GX_WGPIPE_Write8(uint8_t val) {\n    if (wgp_redirect(val)) return;\n"
+assert t.count(_w8)==1, 'w8'
+t=t.replace(_w8, """// tools/gx-pipeline: bufer del hilo del juego para el FIFO grafico (ver make_patch.py)
+static thread_local uint8_t s_wgp_buf[8192];   // por hilo: un volcado desde otro hilo no toca el del juego
+static thread_local size_t s_wgp_n = 0;
+static thread_local int s_wgp_mode = -1;   // -1 sin comprobar, 0 FIFO normal, 1 redireccion a RAM
+static const bool s_wgp_slow = [] {
+    const char* b = std::getenv("NWII_WGP_BATCH");
+    return (b && b[0] == '0') || std::getenv("NWII_GXDUMP") || std::getenv("NWII_WGSEG") ||
+           std::getenv("NWII_WGTRACE") || std::getenv("NWII_SAMPLE");
+}();
+static void wgp_spill() {
+    if (!s_wgp_n) return;
+    std::lock_guard<std::mutex> lock(g_fifo_mutex);
+    g_hw_fifo.insert(g_hw_fifo.end(), s_wgp_buf, s_wgp_buf + s_wgp_n);
+    s_wgp_n = 0;
+}
+void GX_WGPIPE_Flush() { s_wgp_mode = -1; wgp_spill(); }
+void GX_WGPIPE_Discard() { s_wgp_n = 0; s_wgp_mode = -1; }
+static inline bool wgp_fast(size_t n) {
+    if (s_wgp_mode < 0) {
+        if (s_wgp_slow) { s_wgp_mode = 1; return false; }
+        static const uint32_t physical_mask = Config::get().platform == Platform::Wii ? 0x1FFFFFFFu : 0x03FFFFFFu;
+        uint32_t base, end, wptr;
+        nwii::runtime::hw::pi_fifo_get(base, end, wptr);
+        const bool redirect = base != 0 && nwii::runtime::g_mmu &&
+            (base & physical_mask) != (nwii::runtime::hw::cp_fifo_base_reg() & physical_mask);
+        s_wgp_mode = redirect ? 1 : 0;
+    }
+    if (s_wgp_mode != 0) return false;
+    if (s_wgp_n + n > sizeof(s_wgp_buf)) wgp_spill();
+    return true;
+}
+"""+_w8.replace("{\n", "{\n    if (wgp_fast(1)) { s_wgp_buf[s_wgp_n++] = val; return; }\n    GX_WGPIPE_Flush();\n",1))
+_w16="void GX_WGPIPE_Write16(uint16_t val) {\n"
+assert t.count(_w16)==1, 'w16'
+t=t.replace(_w16, _w16+"    if (wgp_fast(2)) { s_wgp_buf[s_wgp_n] = uint8_t(val >> 8); s_wgp_buf[s_wgp_n + 1] = uint8_t(val); s_wgp_n += 2; return; }\n    GX_WGPIPE_Flush();\n")
+_w32="void GX_WGPIPE_Write32(uint32_t val) {\n"
+assert t.count(_w32)==1, 'w32'
+t=t.replace(_w32, _w32+"    if (wgp_fast(4)) { uint8_t* d = s_wgp_buf + s_wgp_n; d[0] = uint8_t(val >> 24); d[1] = uint8_t(val >> 16); d[2] = uint8_t(val >> 8); d[3] = uint8_t(val); s_wgp_n += 4; return; }\n    GX_WGPIPE_Flush();\n")
+_w64="void GX_WGPIPE_WriteF64(double val) {\n    union { double d; uint64_t i; } u; u.d = val;\n"
+assert t.count(_w64)==1, 'w64'
+t=t.replace(_w64, _w64+"    if (wgp_fast(8)) { for (int k = 0; k < 8; ++k) s_wgp_buf[s_wgp_n + k] = uint8_t(u.i >> (56 - 8 * k)); s_wgp_n += 8; return; }\n    GX_WGPIPE_Flush();\n")
+# el hilo de lectura del FIFO dormia 250 us (en Windows ~1-2 ms) cuando no habia un cuadro
+# completo; cada vez que el juego espera a la GPU (GXDrawDone, fichas de sincronia) pagaba esa
+# latencia, y con muchos monstruos espera muchas veces por cuadro. Ahora el juego lo despierta al
+# volcar datos (NWII_FIFO_WAKE=0 vuelve a la espera fija).
+_wk="static void GXPipelineWorker() {\n"
+assert t.count(_wk)==1, 'worker'
+t=t.replace(_wk, """// tools/gx-pipeline: despertar del hilo de lectura del FIFO
+std::mutex g_port_fifo_wake_mtx;
+std::condition_variable g_port_fifo_wake_cv;
+std::atomic<bool> g_port_fifo_kick{false};
+std::atomic<bool> g_port_fifo_sleeping{false};
+static const bool g_port_fifo_wake = [] { const char* e = std::getenv("NWII_FIFO_WAKE"); return !(e && e[0] == '0'); }();
+void PortFifoKick() {
+    g_port_fifo_kick.store(true, std::memory_order_release);
+    if (g_port_fifo_sleeping.load(std::memory_order_acquire)) { std::lock_guard<std::mutex> lk(g_port_fifo_wake_mtx); g_port_fifo_wake_cv.notify_one(); }
+}
+// Al volcar el bufer del juego no se despierta al lector cada vez: con muchos monstruos eran miles
+// de llamadas al sistema por segundo en el hilo del juego (~3%). Se le despierta cada 64 KB o cada
+// 0,5 ms (el lector se despierta solo cada 1 ms, y siempre que el juego se queda esperando).
+void PortFifoKickBatched(size_t n) {
+    static thread_local size_t since = 0;
+    static thread_local int64_t last = 0;
+    since += n;
+    const int64_t now = std::chrono::duration_cast<std::chrono::microseconds>(std::chrono::steady_clock::now().time_since_epoch()).count();
+    if (since < 65536 && now - last < 500) return;
+    since = 0; last = now;
+    PortFifoKick();
+}
+"""+_wk,1)
+_sl="            std::this_thread::sleep_for(std::chrono::microseconds(250));\n"
+assert t.count(_sl)==1, 'sleep'
+t=t.replace(_sl, """            if (g_port_fifo_wake) {
+                std::unique_lock<std::mutex> lk(g_port_fifo_wake_mtx);
+                g_port_fifo_sleeping.store(true, std::memory_order_release);
+                if (!g_port_fifo_kick.load(std::memory_order_acquire))
+                    g_port_fifo_wake_cv.wait_for(lk, std::chrono::milliseconds(1), [] { return g_port_fifo_kick.load(std::memory_order_acquire); });
+                g_port_fifo_sleeping.store(false, std::memory_order_release);
+                g_port_fifo_kick.store(false, std::memory_order_release);
+            } else
+                std::this_thread::sleep_for(std::chrono::microseconds(250));
+""")
+_sp="    g_hw_fifo.insert(g_hw_fifo.end(), s_wgp_buf, s_wgp_buf + s_wgp_n);\n    s_wgp_n = 0;\n}\n"
+assert t.count(_sp)==1, 'spill'
+t=t.replace(_sp, "    g_hw_fifo.insert(g_hw_fifo.end(), s_wgp_buf, s_wgp_buf + s_wgp_n);\n    ::PortFifoKickBatched(s_wgp_n);\n    s_wgp_n = 0;\n}\n")
+t=t.replace("static void wgp_spill() {\n","void PortFifoKick();\n}\nnamespace nwii::runtime {\nstatic void wgp_spill() {\n",1) if False else t
+_rs="void PortState_gx_reset() {\n"
+assert t.count(_rs)==1, 'reset'
+t=t.replace(_rs, _rs+"  nwii::runtime::GX_WGPIPE_Discard();\n")
+_pi="bool PortState_gx_idle() {\n"
+assert t.count(_pi)==1, 'idle'
+t=t.replace(_pi, _pi+"  nwii::runtime::GX_WGPIPE_Flush();\n")
+_out('gx.cpp', t)
+# volcado antes de cada acceso a registros
+t=_reread('os_hle_stubs.cpp')
+for _fn in ('uint32_t HW_Reg_Read32(uint32_t addr) {\n','uint16_t HW_Reg_Read16(uint32_t addr) {\n','void HW_Reg_Write32(uint32_t addr, uint32_t val) {\n','void HW_Reg_Write16(uint32_t addr, uint16_t val) {\n'):
+    assert t.count(_fn)==1, _fn
+    t=t.replace(_fn, _fn+'  GX_WGPIPE_Flush();\n  if (::port_perf::g_count_regs) ::port_perf::CountReg(addr, '+('true' if 'Write' in _fn else 'false')+');\n')
+_ns='namespace nwii::runtime {\nuint32_t HW_Reg_Read32(uint32_t addr) {\n'
+assert t.count(_ns)==1, 'ns stubs'
+t=t.replace(_ns, 'namespace nwii::runtime {\nvoid GX_WGPIPE_Flush();\nuint32_t HW_Reg_Read32(uint32_t addr) {\n')
+t='#include "port_perf.h"\n'+t
+_out('os_hle_stubs.cpp', t)
+# y en cada sondeo real de interrupciones (ios.cpp)
+t=_reread('ios.cpp')
+_pp="bool process_pending_callbacks(CPUContext &ctx) {\n"
+assert t.count(_pp)==1, 'ppc'
+t=t.replace(_pp, "void GX_WGPIPE_Flush();\n"+_pp+"  GX_WGPIPE_Flush();\n")
+_out('ios.cpp', t)
+
 # --- output_170.cpp (ejecutable): THPVideoDecode nativo (port_thp.cpp) ---
 o170=(root/'export/output_170.cpp').read_text()
 nl='\r\n' if '\r\n' in o170 else '\n'
@@ -1436,6 +1679,18 @@ assert o170.count(_b)==1, 'functions.h'
 o170=o170.replace(_b,_b+'namespace port_thp { bool Decode(nwii::runtime::CPUContext&); }'+nl)
 (pathlib.Path(__file__).parent/'output_170.cpp').write_text(o170,newline='')
 print('ok output_170.cpp')
+
+# --- output_1.cpp (ejecutable): memcpy y __fill_mem del juego en nativo (port_mem.cpp) ---
+o1=(root/'export/output_1.cpp').read_text()
+nl='\r\n' if '\r\n' in o1 else '\n'
+for _f,_pc,_fn in (('void func_80004000(CPUContext& ctx) {','0x80004000','Copy'), ('void __fill_mem_8000429C(CPUContext& ctx) {','0x8000429C','Fill')):
+    assert o1.count(_f+nl)==1, _f
+    o1=o1.replace(_f+nl, _f+nl+'    if (ctx.pc == '+_pc+' && port_mem::'+_fn+'(ctx)) return;  // tools/gx-pipeline: en nativo'+nl)
+_b='#include "functions.h"'+nl
+assert o1.count(_b)==1, 'functions.h (output_1)'
+o1=o1.replace(_b,_b+'namespace port_mem { bool Copy(nwii::runtime::CPUContext&); bool Fill(nwii::runtime::CPUContext&); }'+nl)
+(pathlib.Path(__file__).parent/'output_1.cpp').write_text(o1,newline='')
+print('ok output_1.cpp')
 
 # --- cabeceras con cambios (include/runtime/*.h): originales de export/nWiiRuntime + include-patches/*.diff
 import re as _re
@@ -1465,3 +1720,37 @@ for _d in sorted(_hp.glob('*.h.diff')):
     _o = (root / 'export/nWiiRuntime/include/runtime' / _h).read_text().replace('\r\n', '\n')
     (_hi / _h).write_text(_apply_udiff(_o, _d.read_text(), _h), newline='')
     print('ok include/runtime/' + _h)
+
+# --- cache_loop.cpp: bucles de cache del juego (DCFlushRange, DCInvalidateRange...) de golpe ---
+# No hacen nada en el port; el codigo generado los adelanta por tandas que pide aqui. El original
+# limitaba cada tanda a 128 lineas y a no pasar del siguiente evento: con el reloj del juego
+# limitado al reloj real casi siempre habia un evento a punto y se repetia la consulta cada pocas
+# vueltas (~9 % del hilo del juego con muchos monstruos). Ahora la tanda es el bucle entero, salvo
+# con una interrupcion por atender (como antes) o un retardo de IPC/DI por sondeos (tandas cortas).
+# Los eventos que venzan durante el bucle se atienden en el siguiente sondeo. NWII_CACHE_SCALAR=1
+# vuelve al bucle de una en una (como el original con esa variable).
+t=_src('core/cache_loop.cpp')
+_cl0='uint32_t CacheLoopBatchCount(const CPUContext& ctx,uint32_t remaining) {\n'
+assert t.count(_cl0)==1, 'cache_loop'
+_ci=t.index(_cl0); _cj=t.index('\n}\n', _ci)+3
+t=t[:_ci]+_cl0+"""  static const bool enabled=std::getenv("NWII_CACHE_SCALAR")==nullptr;
+  static const bool wall=std::getenv("NWII_WALLTB")!=nullptr;
+  if(!enabled || wall || !remaining || g_trace_after_dec>0) return 0;
+  const bool dispatch=!ctx.in_callback && (ctx.msr&0x8000);
+  if(dispatch && (ctx.pending_cb_count.load(std::memory_order_relaxed) ||
+     (hw::pi_intsr.load(std::memory_order_relaxed)&hw::pi_intmr.load(std::memory_order_relaxed)))) return 0;
+  if(g_ipc_interrupt_delay || hw::g_di_interrupt_delay) return std::min(remaining,32u);
+  return remaining;
+}
+"""+t[_cj:]
+_out('cache_loop.cpp', '// tools/gx-pipeline: copia de src/core/cache_loop.cpp generada por make_patch.py (bucles de cache de golpe).\n'+t)
+
+# --- huella del generador de sombreadores para cache_sombreadores.bin (ver PortShaderBuildId) ---
+import hashlib as _hl
+_rgp = pathlib.Path(__file__).parent / 'renderer_gl.cpp'
+_tgp = pathlib.Path(__file__).parent / 'tev_shader_gen.cpp'
+_rgb = _rgp.read_bytes()
+assert _rgb.count(b'__PORT_SHADER_ID__') == 1, 'huella sombreadores'
+_sid = _hl.sha1(_rgb + _tgp.read_bytes()).hexdigest()[:16]
+_rgp.write_bytes(_rgb.replace(b'__PORT_SHADER_ID__', _sid.encode()))
+print('ok huella de sombreadores ' + _sid)

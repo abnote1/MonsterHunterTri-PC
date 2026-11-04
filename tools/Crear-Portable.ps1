@@ -8,8 +8,13 @@ param([string]$Destino = "")
 $ErrorActionPreference = 'Stop'
 $root = Split-Path -Parent $PSScriptRoot
 if (-not $Destino) { $Destino = Join-Path (Split-Path -Parent $root) 'MonsterHunterTri-Portable' }
-$exe = Join-Path $root 'build-o2\Release\MonsterHunterTri-o2pipe.exe'
-if (-not (Test-Path $exe)) { $exe = Join-Path $root 'MonsterHunterTri.exe' }
+# Ejecutable: el de clang (el rapido) si existe; si no, el de MSVC.
+$exe = $null
+foreach ($c in 'MonsterHunterTri-clang.exe', 'build-o2\Release\MonsterHunterTri.exe', 'build-o2\Release\MonsterHunterTri-o2pipe.exe', 'MonsterHunterTri.exe') {
+  $p = Join-Path $root $c
+  if (Test-Path $p) { $exe = $p; break }
+}
+if (-not $exe) { throw "No encuentro el ejecutable del port en $root" }
 if (-not (Test-Path (Join-Path $root 'game\DATA'))) { throw "No encuentro game\DATA en $root" }
 Write-Host "Origen : $root"
 Write-Host "Destino: $Destino"
@@ -20,16 +25,27 @@ New-Item -ItemType Directory -Force -Path $Destino | Out-Null
 Copy-Item $exe (Join-Path $Destino 'MonsterHunterTri.exe') -Force
 
 # 2) Runtime de Visual C++ junto al .exe (por si el otro PC no lo tiene instalado)
-$crt = Get-ChildItem 'C:\Program Files\Microsoft Visual Studio\2022\*\VC\Redist\MSVC\*\x64\Microsoft.VC143.CRT' -Directory -ErrorAction SilentlyContinue |
-       Sort-Object FullName -Descending | Select-Object -First 1
+# Se busca en todas las instalaciones de Visual Studio (2022, 18 Insiders...).
+$vsDirs = @()
+$vswhere = Join-Path ${env:ProgramFiles(x86)} 'Microsoft Visual Studio\Installer\vswhere.exe'
+if (Test-Path $vswhere) { $vsDirs = @(& $vswhere -all -products * -prerelease -property installationPath) }
+$vsDirs += @(Get-ChildItem 'C:\Program Files\Microsoft Visual Studio\*\*' -Directory -ErrorAction SilentlyContinue | ForEach-Object FullName)
+$crt = $vsDirs | ForEach-Object { Get-ChildItem (Join-Path $_ 'VC\Redist\MSVC\*\x64\Microsoft.VC14*.CRT') -Directory -ErrorAction SilentlyContinue } |
+       Sort-Object { $_.Parent.Parent.Name } -Descending | Select-Object -First 1
 if ($crt) {
   foreach ($d in 'msvcp140.dll', 'vcruntime140.dll', 'vcruntime140_1.dll') {
     $f = Join-Path $crt.FullName $d
     if (Test-Path $f) { Copy-Item $f $Destino -Force }
   }
   Write-Host "Runtime de Visual C++: $($crt.FullName)"
+} elseif (Test-Path "$env:WINDIR\System32\msvcp140.dll") {
+  foreach ($d in 'msvcp140.dll', 'vcruntime140.dll', 'vcruntime140_1.dll') {
+    $f = Join-Path "$env:WINDIR\System32" $d
+    if (Test-Path $f) { Copy-Item $f $Destino -Force }
+  }
+  Write-Host 'Runtime de Visual C++: copiado de System32'
 } else {
-  Write-Warning 'No encontre el runtime de Visual C++ de Visual Studio 2022; el otro PC necesitara tenerlo instalado (vc_redist.x64.exe).'
+  Write-Warning 'No encontre el runtime de Visual C++; el otro PC necesitara tenerlo instalado (vc_redist.x64.exe).'
 }
 
 # 3) Copias de carpetas

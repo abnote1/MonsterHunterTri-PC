@@ -20,12 +20,13 @@ Parte de una recompilación estática hecha con [NWiiRecomp](#requisitos) y aña
 | Idioma | `port_lang.h` | Inglés, español, francés y (experimental) alemán e italiano en la versión americana. |
 | Vídeos THP | `port_thp.cpp`, `port_thp_decode.h` | Decodificador JPEG nativo de los vídeos en un hilo aparte: vídeos a velocidad completa y sin cortes de audio. Se verifica contra el decodificador del juego antes de usarse. |
 | Arreglos gráficos | `make_patch.py` | Borrados del EFB con las máscaras de color/alfa/profundidad como la consola, cuadros con varias copias a pantalla (teclado virtual, diálogos en pausa), copias EFB opacas, escalado sin rayas. |
-| Kit de instalación | `tools/kit/`, `tools/Crear-Kit.ps1` | Otra persona pone su ISO y su paquete HD y `Instalar.cmd` le monta el port. |
-| Carpeta portable | `tools/Crear-Portable.ps1` | Copia el port completo a otra carpeta para llevarlo a otro PC o a la Steam Deck. |
+| Rendimiento | `compactar.py`, `include-patches/cpu_context.h.diff`, `port_fastpoll.h`, `port_mem.cpp`, `port_perf.*`, `pipeline_tail.inc` | Unidades generadas compactadas (solo las entradas reales en cada función), accesos a memoria por tabla y sin alias, llamadas indirectas directas, sondeo de eventos barato, memcpy/memset nativos, bucles de caché de golpe, reparto de núcleos y descanso en ocioso. Presentación al ritmo del VI del juego (sin microtirones). En un Ryzen 5 1600X la zona con más monstruos (~15.000 dibujos por cuadro) va a 30 FPS estables (antes ~20). |
+| Kit de instalación | `tools/kit/`, `tools/Crear-Kit.ps1`, `Crear kit.cmd` | Otra persona pone su ISO y su paquete HD y `Instalar.cmd` le monta el port. |
+| Carpeta portable | `tools/Crear-Portable.ps1`, `Crear carpeta portable.cmd` | Copia el port completo a otra carpeta para llevarlo a otro PC o a la Steam Deck. |
 
 Los cambios sobre el runtime de NWiiRecomp no se guardan como copias: `make_patch.py` lee las fuentes originales de
 `export/nWiiRuntime` y genera las versiones parcheadas (comprobando cada punto de anclaje), y `include-patches/`
-guarda las diferencias de cuatro cabeceras. Si tu versión de NWiiRecomp es distinta, `make_patch.py` se detiene
+guarda las diferencias de seis cabeceras. Si tu versión de NWiiRecomp es distinta, `make_patch.py` se detiene
 indicando qué parte no coincide.
 
 ## Requisitos
@@ -47,11 +48,15 @@ indicando qué parte no coincide.
    ```
    python tools\gx-pipeline\make_patch.py
    ```
-4. **Compila** (la primera vez tarda bastante):
+4. **Compila** (la primera vez tarda bastante). Recomendado, con clang (bastante más rápido):
+   doble clic en `tools\gx-pipeline\Compilar con Clang.cmd` (necesita "Herramientas de C++ Clang para
+   Windows" y "Herramientas de CMake de C++" del Visual Studio Installer, y Python 3).
+   Resultado: `MonsterHunterTri-clang.exe` en la raíz. Con MSVC:
    ```
    powershell -ExecutionPolicy Bypass -File tools\gx-pipeline\Reconstruir-O2Pipe.ps1 [-Deps <carpeta _deps de NWiiRecomp>]
    ```
-   Resultado: `build-o2\Release\MonsterHunterTri-o2pipe.exe`. Cópialo a la raíz como `MonsterHunterTri.exe`.
+   Los dos scripts ejecutan antes `compactar.py`, que escribe `tools\gx-pipeline\compacto\` (código del
+   juego: no se sube al repositorio).
 5. Opcional: pon tu paquete de texturas HD en `texturas_hd\`.
 
 Sin argumentos el ejecutable usa `game\DATA` y el `.toml` de su carpeta.
@@ -68,6 +73,13 @@ Los `.cmd` de `tools\gx-pipeline\` arrancan el juego con registros activados. Va
 `NWII_HITCH_LOG=1` (tirones), `NWII_FRAMELOG=1` (qué se dibuja en cada cuadro), `NWII_CPU_PROFILE=1`,
 `NWII_EFBCOPY_TRACE=1`, `NWII_CLEAR_MAGENTA=1` (zonas sin dibujar en magenta), `NWII_THP_NATIVE=0`
 (vídeos con el decodificador del juego), `NWII_GX_SERIAL=1` (sin el hilo gráfico).
+
+Con `NWII_LOG_FILE=1` (o en la Steam Deck) el registro va a `logs\` e incluye `[Ritmo]` (intervalos
+entre cuadros entregados y mostrados), `[Interprete]` (entradas al intérprete de reserva) y, en la Deck,
+`[Deck]` (frecuencias, GPU y consumo). Para comparar, se puede desactivar cada mejora:
+`NWII_DIRECT_CALLS=0`, `NWII_PRESENT_VI=0`, `NWII_PACE_GRID=1`, `NWII_FAST_POLL=1`, `NWII_NATIVE_MEM=0`,
+`NWII_CACHE_SCALAR=1`, `NWII_WGP_BATCH=0`, `NWII_IDLE_SLEEP=0`, `NWII_AFFINITY=0`. `NWII_CPU_SAMPLE=1`
+saca un perfil del hilo del juego.
 
 ## Licencias
 

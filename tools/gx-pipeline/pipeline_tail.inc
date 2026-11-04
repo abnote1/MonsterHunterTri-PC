@@ -8,6 +8,15 @@
 // Registro de tirones (NWII_HITCH_LOG=1): cuando entre dos cuadros dibujados pasan
 // mas de 45 ms, anota cuanto tardo cada fase para separar dibujado, preparacion
 // (lectura/decodificacion del FIFO) y cuadros que el juego entrego tarde.
+namespace port_ritmo {
+inline int Cubo(double ms) { return ms < 25 ? 0 : ms < 30 ? 1 : ms < 37 ? 2 : ms < 45 ? 3 : 4; }
+static std::atomic<uint32_t> entrega[5], juego[5], pintado[5], dibujo[5], muestra[5];
+static std::atomic<uint32_t> fusion{0};
+inline void Texto(std::atomic<uint32_t>* a, char* b) {
+    unsigned v[5]; for (int i = 0; i < 5; ++i) v[i] = a[i].exchange(0);
+    std::snprintf(b, 64, "%u/%u/%u/%u/%u", v[0], v[1], v[2], v[3], v[4]);
+}
+}
 static std::atomic<uint32_t> s_last_prep_us{0};
 static std::atomic<uint32_t> s_last_prep_draws{0};
 static void RenderGXFrame(std::vector<nwii::runtime::gx::GXCommand>& frame) {
@@ -38,14 +47,24 @@ static void RenderGXFrame(std::vector<nwii::runtime::gx::GXCommand>& frame) {
             size_t draws = 0;
             for (const auto& c : frame)
                 if (c.type == nwii::runtime::gx::GXCommandType::DrawPrimitive) ++draws;
-            std::printf("[Hitch] t=%.2fs gap=%.1fms render=%.1fms prep=%.1fms draws=%zu wait=%.1fms somb=%u(%.0fms) tex=%u(%.0fms) hd=%u\n",
+            std::printf("[Hitch] t=%.2fs gap=%.1fms render=%.1fms prep=%.1fms draws=%zu wait=%.1fms somb=%u(%.0fms) tex=%u(%.0fms, decod %.0fms) hd=%u\n",
                 std::chrono::duration<double>(h1 - t_origin).count(), gap, rend,
                 s_last_prep_us.load() / 1000.0, draws, gap - rend,
                 port_menu::g_prof_compiles.load(), port_menu::g_prof_compile_us.load() / 1000.0,
-                port_menu::g_prof_uploads.load(), port_menu::g_prof_upload_us.load() / 1000.0, port_menu::g_prof_hd.load());
+                port_menu::g_prof_uploads.load(), port_menu::g_prof_upload_us.load() / 1000.0, port_menu::g_prof_decode_us.load() / 1000.0, port_menu::g_prof_hd.load());
+        }
+        if (g_stat_frames > 1) { ++port_ritmo::pintado[port_ritmo::Cubo(gap)]; ++port_ritmo::dibujo[port_ritmo::Cubo(rend)]; }
+        static auto ult_imp = h1;
+        if (h1 - ult_imp >= std::chrono::seconds(5)) {
+            ult_imp = h1;
+            char e[64], j[64], p[64], d[64], m[64];
+            port_ritmo::Texto(port_ritmo::entrega, e); port_ritmo::Texto(port_ritmo::juego, j);
+            port_ritmo::Texto(port_ritmo::pintado, p); port_ritmo::Texto(port_ritmo::dibujo, d); port_ritmo::Texto(port_ritmo::muestra, m);
+            std::printf("[Ritmo] t=%.0fs cuadros por tramo de ms <25/25-30/30-37/37-45/>45: entrega=%s juego=%s pintado=%s dibujo=%s mostrado=%s fusionados=%u\n",
+                std::chrono::duration<double>(h1 - t_origin).count(), e, j, p, d, m, port_ritmo::fusion.exchange(0));
         }
         last_end = h1;
-        port_menu::g_prof_compiles = 0; port_menu::g_prof_compile_us = 0; port_menu::g_prof_uploads = 0; port_menu::g_prof_upload_us = 0; port_menu::g_prof_hd = 0;
+        port_menu::g_prof_compiles = 0; port_menu::g_prof_compile_us = 0; port_menu::g_prof_uploads = 0; port_menu::g_prof_upload_us = 0; port_menu::g_prof_decode_us = 0; port_menu::g_prof_hd = 0;
     }
 }
 
@@ -53,6 +72,86 @@ static std::mutex s_pipe_mtx;
 static std::vector<nwii::runtime::gx::GXCommand> s_pipe_frame;
 static bool s_pipe_ready = false;
 uint64_t g_stat_pipe_merged = 0;
+// tools/gx-pipeline: aviso al hilo principal de que hay cuadro (PortWaitFrameUntil) y
+// estadisticas de ritmo para el registro ([Ritmo], con NWII_HITCH_LOG).
+static std::condition_variable s_pipe_cv;
+static std::chrono::steady_clock::time_point s_pipe_t{};   // llegada del cuadro pendiente
+// Presentacion al ritmo del VI del juego: en la consola el cuadro se ve en el siguiente retrazado
+// del VI despues de copiarse al XFB, asi que aunque el juego termine cada cuadro unos ms antes o
+// despues, se ve con un ritmo fijo. Aqui se mostraba en cuanto llegaba (ritmo irregular). Ahora
+// se dibuja al llegar y se presenta en el siguiente retrazado del VI del juego mas el tiempo que
+// suele tardar el dibujado. NWII_PRESENT_VI=0 lo desactiva.
+std::atomic<int64_t> g_port_vi_ns{0};   // reloj del host (steady, ns) del ultimo retrazado del VI
+void PortViTick(int64_t ns) { g_port_vi_ns.store(ns, std::memory_order_relaxed); }
+static int64_t s_present_at = 0;         // ns steady; 0 = presentar ya
+static bool s_present_frame = false;     // hay cuadro del juego dibujado para presentar
+static double s_render_ema_ms = 10.0;
+static inline int64_t PortNs(std::chrono::steady_clock::time_point t) {
+    return std::chrono::duration_cast<std::chrono::nanoseconds>(t.time_since_epoch()).count();
+}
+static void PortPlanPresent(std::chrono::steady_clock::time_point llegada, std::chrono::steady_clock::duration rend) {
+    static const bool off = std::getenv("NWII_PRESENT_VI") && std::getenv("NWII_PRESENT_VI")[0] == '0';
+    s_render_ema_ms = 0.9 * s_render_ema_ms + 0.1 * std::chrono::duration<double, std::milli>(rend).count();
+    s_present_at = 0;
+    s_present_frame = true;
+    const int64_t vi = g_port_vi_ns.load(std::memory_order_relaxed);
+    if (off || !vi || !llegada.time_since_epoch().count()) return;
+    const int64_t per = 16666667;   // VI de 60 Hz del planificador (tb_freq / 60)
+    const int64_t a = PortNs(llegada);
+    const int64_t d = a - vi;
+    int64_t q = d / per;
+    if (d < 0 && d % per) --q;
+    const int64_t primero = vi + (q + 1) * per;   // primer retrazado despues de la llegada
+    // Con el juego a 30 FPS hay un retrazado intermedio en cada cuadro: segun lo que tarde el juego
+    // en ese cuadro, la llegada cae antes o despues de el y "el siguiente retrazado" alternaba entre
+    // 1 y 2 periodos (cuadros de 17/50 ms). Se mantiene el compas: el cuadro se muestra en su
+    // turno (ultimo + cadencia) si llega a tiempo; si llega tarde, en el primero posible (y el
+    // compas se corre). Solo se adelanta el compas si muchos cuadros seguidos llegan sobrados.
+    static int64_t ult_tick = 0, ult_lleg = 0;
+    static double cad_ema = 2.0;
+    static int sobrados = 0;
+    if (ult_lleg) {
+        const double it = double(a - ult_lleg) / per;
+        if (it > 0.5 && it < 4.5) cad_ema = 0.9 * cad_ema + 0.1 * it;
+    }
+    ult_lleg = a;
+    const int cad = std::clamp(int(cad_ema + 0.5), 1, 4);
+    int64_t tick = primero;
+    if (ult_tick) {
+        int64_t turno = ult_tick + cad * per;
+        const int64_t dt = turno - vi + per / 2;      // alineado con la rejilla actual del VI
+        int64_t qt = dt / per;
+        if (dt < 0 && dt % per) --qt;
+        turno = vi + qt * per;
+        if (primero < turno && turno - primero <= 3 * per) {
+            if (primero - a > 6000000) {               // llega con margen de sobra al retrazado anterior
+                if (++sobrados >= 60) sobrados = 0;     // re-fase: desde ahora se muestra un retrazado antes
+                else tick = turno;
+            } else { sobrados = 0; tick = turno; }
+        } else sobrados = 0;
+    }
+    ult_tick = tick;
+    // Margen para que el dibujado ya este hecho al presentar, pero sin tener al hilo principal
+    // esperando tanto que no le de tiempo a dibujar el siguiente cuadro (en la Steam Deck el dibujado
+    // tarda 20-35 ms y con vsync el intercambio espera ademas al refresco de la pantalla).
+    const double hueco = cad * 16.6667 - s_render_ema_ms - 6.0;
+    const double margen = std::clamp(std::min(s_render_ema_ms * 1.2 + 2.0, hueco), 0.0, 25.0);
+    s_present_at = tick + int64_t(margen * 1e6);
+}
+// Hilo principal, justo antes de SDL_GL_SwapWindow.
+void PortPaceBeforeSwap() {
+    if (!s_present_frame) return;
+    s_present_frame = false;
+    if (s_present_at) {
+        const int64_t w = s_present_at - PortNs(std::chrono::steady_clock::now());
+        s_present_at = 0;
+        if (w > 200000 && w < 45000000) port_perf::SleepUs(uint32_t(w / 1000));
+    }
+    static int64_t ult = 0;   // intervalo entre presentaciones, para [Ritmo] mostrado=
+    const int64_t ahora = PortNs(std::chrono::steady_clock::now());
+    if (ult) ++port_ritmo::muestra[port_ritmo::Cubo((ahora - ult) / 1e6)];
+    ult = ahora;
+}
 
 static void GXPipelineWorker() {
     std::vector<nwii::runtime::gx::GXCommand> f;
@@ -64,10 +163,24 @@ static void GXPipelineWorker() {
         }
         s_last_prep_us.store((uint32_t)std::chrono::duration_cast<std::chrono::microseconds>(
             std::chrono::steady_clock::now() - p0).count());
+        {   // ritmo de entrega de cuadros del juego y trabajo del juego por cuadro (sin lo que durmio ocioso)
+            static std::chrono::steady_clock::time_point ult{};
+            static uint64_t ult_ocio = 0;
+            const auto ahora = std::chrono::steady_clock::now();
+            const uint64_t ocio = port_perf::IdleUs();
+            if (ult.time_since_epoch().count()) {
+                const double ms = std::chrono::duration<double, std::milli>(ahora - ult).count();
+                ++port_ritmo::entrega[port_ritmo::Cubo(ms)];
+                ++port_ritmo::juego[port_ritmo::Cubo(ms - double(ocio - ult_ocio) / 1000.0)];
+            }
+            ult = ahora; ult_ocio = ocio;
+        }
         std::lock_guard<std::mutex> lk(s_pipe_mtx);
         if (!s_pipe_ready) {
             s_pipe_frame.swap(f);
             s_pipe_ready = true;
+            s_pipe_t = std::chrono::steady_clock::now();
+            s_pipe_cv.notify_one();
         } else {
             // El dibujado va con retraso: como el codigo original con varios
             // cuadros pendientes, se conservan los comandos de estado/copias
@@ -80,9 +193,24 @@ static void GXPipelineWorker() {
             for (auto& c : f) merged.push_back(std::move(c));
             s_pipe_frame.swap(merged);
             ++g_stat_pipe_merged;
+            ++port_ritmo::fusion;
+            s_pipe_t = std::chrono::steady_clock::now();
         }
         f.clear();
     }
+}
+
+// Hilo principal (main.cpp): antes dormia en una rejilla fija de 60 Hz y cada cuadro del juego
+// esperaba entre 0 y 16,7 ms a la siguiente vuelta segun la fase: entre cuadros quedaban 17, 33 o
+// 50 ms (microtirones constantes aunque la media fuera 30). Ahora espera al siguiente cuadro del
+// juego y lo dibuja en cuanto llega; como mucho hasta 'hasta' (siguiente refresco) para atender
+// eventos y el menu. NWII_PACE_GRID=1 vuelve a la rejilla.
+void PortWaitFrameUntil(std::chrono::steady_clock::time_point hasta) {
+    static const bool rejilla = std::getenv("NWII_GX_SERIAL") || std::getenv("NWII_PACE_GRID") ||
+        (std::getenv("NWII_INTERP") && std::getenv("NWII_INTERP")[0] != '0');
+    if (rejilla || !g_window) { std::this_thread::sleep_until(hasta); return; }
+    std::unique_lock<std::mutex> lk(s_pipe_mtx);
+    s_pipe_cv.wait_until(lk, hasta, [] { return s_pipe_ready; });
 }
 
 // ---- Cuadros intermedios (NWII_INTERP=1) ----------------------------------
@@ -213,13 +341,17 @@ void ProcessGXFifo() {
         std::thread(GXPipelineWorker).detach();
     }
     if (!interp) {
+        std::chrono::steady_clock::time_point llegada;
         {
             std::lock_guard<std::mutex> lk(s_pipe_mtx);
             if (!s_pipe_ready) return;
             f.swap(s_pipe_frame);
             s_pipe_ready = false;
+            llegada = s_pipe_t;
         }
+        const auto r0 = std::chrono::steady_clock::now();
         RenderGXFrame(f);
+        PortPlanPresent(llegada, std::chrono::steady_clock::now() - r0);
         s_last_frame.swap(f);   // se conserva para el menu del port (RerenderLastGXFrame)
         f.clear();
         return;

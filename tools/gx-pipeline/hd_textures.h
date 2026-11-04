@@ -21,6 +21,7 @@
 #include <condition_variable>
 #include <mutex>
 #include <thread>
+#include "port_perf.h"
 
 namespace hd_textures {
 
@@ -339,6 +340,7 @@ inline void Downscale(Decoded& d, uint32_t ow, uint32_t oh) {
   }
 }
 inline void Worker() {
+  port_perf::PinHelper();
   auto& a = A();
   for (;;) {
     std::string path; std::pair<uint32_t, uint32_t> orig;

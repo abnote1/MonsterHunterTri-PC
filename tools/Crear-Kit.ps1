@@ -1,4 +1,4 @@
-# Crea el kit de instalacion del port (sin nada del juego): otra persona pone su ISO
+﻿# Crea el kit de instalacion del port (sin nada del juego): otra persona pone su ISO
 # (RMHE08) y su paquete de texturas HD y Instalar.cmd le monta el port.
 #
 #   powershell -ExecutionPolicy Bypass -File tools\Crear-Kit.ps1 [-Destino ruta] [-SinZip]
@@ -6,8 +6,14 @@ param([string]$Destino = "", [switch]$SinZip)
 $ErrorActionPreference = 'Stop'
 $root = Split-Path -Parent $PSScriptRoot
 if (-not $Destino) { $Destino = Join-Path (Split-Path -Parent $root) 'MonsterHunterTri-Kit' }
-$exe = Join-Path $root 'build-o2\Release\MonsterHunterTri-o2pipe.exe'
-if (-not (Test-Path $exe)) { $exe = Join-Path $root 'MonsterHunterTri.exe' }
+# Ejecutable: el de clang (el rapido) si existe; si no, el de MSVC.
+$exe = $null
+foreach ($c in 'MonsterHunterTri-clang.exe', 'build-o2\Release\MonsterHunterTri.exe', 'build-o2\Release\MonsterHunterTri-o2pipe.exe', 'MonsterHunterTri.exe') {
+  $p = Join-Path $root $c
+  if (Test-Path $p) { $exe = $p; break }
+}
+if (-not $exe) { throw "No encuentro el ejecutable del port en $root" }
+Write-Host "Ejecutable: $exe"
 $src = Join-Path $PSScriptRoot 'kit'
 $dolphin = Join-Path $PSScriptRoot 'Dolphin-x64'
 Write-Host "Destino: $Destino"
@@ -16,6 +22,18 @@ $h = Join-Path $Destino 'herramientas'
 New-Item -ItemType Directory -Force -Path $h | Out-Null
 
 Copy-Item $exe (Join-Path $Destino 'MonsterHunterTri.exe')
+# Runtime de Visual C++ junto al .exe (Instalar.ps1 ya no necesita descargarlo si esta)
+$vsDirs = @()
+$vswhere = Join-Path ${env:ProgramFiles(x86)} 'Microsoft Visual Studio\Installer\vswhere.exe'
+if (Test-Path $vswhere) { $vsDirs = @(& $vswhere -all -products * -prerelease -property installationPath) }
+$vsDirs += @(Get-ChildItem 'C:\Program Files\Microsoft Visual Studio\*\*' -Directory -ErrorAction SilentlyContinue | ForEach-Object FullName)
+$crt = $vsDirs | ForEach-Object { Get-ChildItem (Join-Path $_ 'VC\Redist\MSVC\*\x64\Microsoft.VC14*.CRT') -Directory -ErrorAction SilentlyContinue } |
+       Sort-Object { $_.Parent.Parent.Name } -Descending | Select-Object -First 1
+$crtDir = if ($crt) { $crt.FullName } elseif (Test-Path "$env:WINDIR\System32\msvcp140.dll") { "$env:WINDIR\System32" } else { $null }
+if ($crtDir) {
+  foreach ($d in 'msvcp140.dll', 'vcruntime140.dll', 'vcruntime140_1.dll') { $f = Join-Path $crtDir $d; if (Test-Path $f) { Copy-Item $f $Destino -Force } }
+  Write-Host "Runtime de Visual C++: $crtDir"
+} else { Write-Warning 'No encontre el runtime de Visual C++: Instalar.cmd ofrecera descargarlo.' }
 $ctl = Join-Path $root 'CONTROLES.md'
 if (Test-Path $ctl) {
   (Get-Content $ctl -Encoding UTF8) -replace 'port de Pepe', 'port de TuNombre' | Set-Content (Join-Path $Destino 'CONTROLES.md') -Encoding UTF8

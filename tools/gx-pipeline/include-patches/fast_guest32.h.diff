@@ -1,0 +1,47 @@
+--- a/fast_guest32.h
++++ b/fast_guest32.h
+@@ -1,39 +1,10 @@
++// tools/gx-pipeline: copia de runtime/fast_guest32.h. Mismo camino rapido que la MMU (tabla de
++// regiones de cpu_context.h): misma semantica (direccion 0xC, MMIO, bordes y vigilancia por el
++// camino completo) sin usar punteros sacados del contexto.
+ #pragma once
+ #include "runtime/cpu_context.h"
+-#include <cstring>
+-#if defined(_MSC_VER)
+-#include <intrin.h>
+-#define NWII_RAM32_INLINE __forceinline
+-#else
+-#define NWII_RAM32_INLINE inline __attribute__((always_inline))
+-#endif
+ namespace nwii::runtime {
+-// Only ordinary cached MEM1/MEM2 use this path. Every other guest alias,
+-// locked cache, MMIO, padding/border access, address 0xC and watched store
+-// retains the original MMU operation. The view holds no cached content.
+-NWII_RAM32_INLINE uint8_t* CachedRAM32(MMU& mmu,uint32_t addr) {
+-    const uint32_t bank=addr&0xFC000000u,offset=addr&0x03FFFFFFu;
+-    if(bank==0x80000000u && offset!=0xCu && size_t(offset)+4<=mmu.mem1.size()-8)
+-        return mmu.mem1.data()+offset;
+-    if(bank==0x90000000u && size_t(offset)+4<=mmu.mem2.size()-8)
+-        return mmu.mem2.data()+offset;
+-    return nullptr;
++PORT_FI uint32_t ReadGuest32Fast(MMU& mmu, uint32_t addr) { return mmu.read32(addr); }
++PORT_FI void WriteGuest32Fast(MMU& mmu, uint32_t addr, uint32_t value) { mmu.write32(addr, value); }
+ }
+-NWII_RAM32_INLINE uint32_t RAM32Swap(uint32_t v) {
+-#if defined(_MSC_VER)
+-    return _byteswap_ulong(v);
+-#else
+-    return __builtin_bswap32(v);
+-#endif
+-}
+-NWII_RAM32_INLINE uint32_t ReadGuest32Fast(MMU& mmu,uint32_t addr) {
+-    if(const auto p=CachedRAM32(mmu,addr)){uint32_t v;std::memcpy(&v,p,4);return RAM32Swap(v);}
+-    return mmu.read32(addr);
+-}
+-NWII_RAM32_INLINE void WriteGuest32Fast(MMU& mmu,uint32_t addr,uint32_t value) {
+-    if(!g_watch_addr)if(auto p=CachedRAM32(mmu,addr)){const uint32_t v=RAM32Swap(value);std::memcpy(p,&v,4);return;}
+-    mmu.write32(addr,value);
+-}
+-}
+-#undef NWII_RAM32_INLINE
+ 

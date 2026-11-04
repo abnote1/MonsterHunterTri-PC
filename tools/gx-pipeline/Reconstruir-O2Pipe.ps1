@@ -7,6 +7,12 @@ $root = Split-Path (Split-Path $PSScriptRoot -Parent) -Parent
 $cmake = 'C:\Program Files\CMake\bin\cmake.exe'
 $deps = $Deps -replace '\\','/'
 $inc = (Join-Path $PSScriptRoot 'o2-pipeline.cmake') -replace '\\','/'
+# Unidades generadas compactadas (compactar.py): solo rehace las que han cambiado.
+$compactar = Join-Path $PSScriptRoot 'compactar.py'
+if (Test-Path $compactar) {
+  if (Get-Command py -ErrorAction SilentlyContinue) { & py -3 $compactar } else { & python $compactar }
+  if ($LASTEXITCODE -ne 0) { throw "compactar.py ha fallado (codigo $LASTEXITCODE). Hace falta Python 3." }
+}
 & $cmake -S (Join-Path $root 'export') -B (Join-Path $root 'build-o2') -G "Visual Studio 17 2022" -A x64 `
   -DNWII_PREVIEW_NAME=o2pipe -DNWII_HOST_AVX2=ON `
   "-DCMAKE_CXX_FLAGS=/DWIN32 /D_WINDOWS /W3 /GR /EHsc /bigobj /utf-8 /MP$Jobs /wd4102 /wd4996" `

@@ -1,0 +1,303 @@
+--- a/cpu_context.h
++++ b/cpu_context.h
+@@ -1,3 +1,5 @@
++// tools/gx-pipeline: copia de runtime/cpu_context.h: camino rapido de la MMU (tabla de regiones de 1 MB) y de psq_l/psq_st
++// en linea, caminos completos sin puntero al contexto, reloj del host cada 64K instrucciones.
+ #pragma once
+ #include <array>
+ #include <bit>
+@@ -7,6 +9,10 @@
+ #include <csetjmp>
+ #include <cstdint>
+ #include <cstring>
++#include <cstdlib>
++#if defined(_MSC_VER) && !defined(__clang__)
++#include <intrin.h>
++#endif
+ #include <iostream>
+ #include <vector>
+ #include <mutex>
+@@ -14,6 +20,24 @@
+ #include <queue>
+ #include <stack>
+ 
++
++// tools/gx-pipeline: camino rapido de la MMU en linea; el camino completo (registros, FIFO, bordes...) aparte.
++#if defined(_MSC_VER)
++#define PORT_FI __forceinline
++#define PORT_NI __declspec(noinline)
++#else
++#define PORT_FI inline __attribute__((always_inline))
++#define PORT_NI __attribute__((noinline))
++#endif
++// El codigo recompilado no guarda nunca el puntero al contexto: con noescape + __restrict el
++// compilador puede dejar los registros del juego en registros del host entre accesos a memoria.
++#if defined(__clang__)
++#define PORT_NOESC __attribute__((noescape))
++#define PORT_RESTRICT __restrict
++#else
++#define PORT_NOESC
++#define PORT_RESTRICT
++#endif
+ namespace nwii {
+ namespace runtime {
+ 
+@@ -40,6 +64,8 @@
+ void HW_Reg_Write32(uint32_t addr, uint32_t val);
+ 
+ struct CPUContext;
++void port_psq_ls(CPUContext &c PORT_NOESC, uint32_t, uint32_t, uint32_t, uint32_t);
++void port_psq_ss(CPUContext &c PORT_NOESC, uint32_t, uint32_t, uint32_t, uint32_t);
+ void init_ipc_client(CPUContext &ctx);
+ bool handle_syscall(CPUContext &ctx);
+ bool process_pending_callbacks(CPUContext &ctx);
+@@ -56,6 +82,15 @@
+ void watch_hit(uint32_t addr, uint32_t value, int width);
+ extern uint32_t g_watch_addr;
+ 
++// tools/gx-pipeline: tabla de regiones de 1 MB (direccion>>20 -> puntero del host). Vacia si hay
++// punto de vigilancia (NWII_WATCH): entonces todo va por el camino completo.
++inline uint8_t *g_port_pt[4096] = {};
++struct MMU;
++inline MMU *g_port_mmu = nullptr;
++uint8_t port_r8s(uint32_t); uint16_t port_r16s(uint32_t); uint32_t port_r32s(uint32_t); uint64_t port_r64s(uint32_t); double port_rf64s(uint32_t);
++void port_w8s(uint32_t, uint8_t); void port_w16s(uint32_t, uint16_t); void port_w32s(uint32_t, uint32_t); void port_w64s(uint32_t, uint64_t);
++void port_wf32s(uint32_t, float); void port_wf64s(uint32_t, double);
++
+ // Strict Dolphin-accurate MMU
+ struct MMU {
+   std::vector<uint8_t> mem1;
+@@ -65,7 +100,47 @@
+   MMU() {
+     mem1.resize(24 * 1024 * 1024 + 8, 0); 
+     mem2.resize(64 * 1024 * 1024 + 8, 0); 
+-  }
++    port_pt_init();
++  }
++  void port_pt_init() {
++    g_port_mmu = this;
++    for (auto &e : g_port_pt) e = nullptr;
++    if (g_watch_addr) return;
++    for (uint32_t i = 0; i < 24; ++i) g_port_pt[0x800 + i] = g_port_pt[0xC00 + i] = mem1.data() + (size_t(i) << 20);
++    for (uint32_t i = 0; i < 64; ++i) g_port_pt[0x900 + i] = g_port_pt[0xD00 + i] = mem2.data() + (size_t(i) << 20);
++  }
++
++  static PORT_FI uint16_t port_bs16(uint16_t v) { return uint16_t((v >> 8) | (v << 8)); }
++  static PORT_FI uint32_t port_bs32(uint32_t v) {
++#if defined(_MSC_VER) && !defined(__clang__)
++    return _byteswap_ulong(v);
++#else
++    return __builtin_bswap32(v);
++#endif
++  }
++  static PORT_FI uint64_t port_bs64(uint64_t v) {
++#if defined(_MSC_VER) && !defined(__clang__)
++    return _byteswap_uint64(v);
++#else
++    return __builtin_bswap64(v);
++#endif
++  }
++  // MEM1/MEM2 normales por 0x8/0xC y 0x9/0xD (sin la direccion 0xC ni los bordes): puntero directo.
++  static PORT_FI uint8_t *port_fast(uint32_t addr, uint32_t) {
++    uint8_t *b = g_port_pt[addr >> 20];
++    return (b && (addr & 0x3FFFFFF0u)) ? b + (addr & 0xFFFFFu) : nullptr;
++  }
++  PORT_FI uint8_t read8(uint32_t addr) { if (uint8_t *f = port_fast(addr, 1)) return *f; return port_r8s(addr); }
++  PORT_FI void write8(uint32_t addr, uint8_t value) { if (uint8_t *f = port_fast(addr, 1)) { *f = value; return; } port_w8s(addr, value); }
++  PORT_FI uint16_t read16(uint32_t addr) { if (uint8_t *f = port_fast(addr, 2)) { uint16_t v; std::memcpy(&v, f, 2); return port_bs16(v); } return port_r16s(addr); }
++  PORT_FI void write16(uint32_t addr, uint16_t value) { if (uint8_t *f = port_fast(addr, 2)) { const uint16_t v = port_bs16(value); std::memcpy(f, &v, 2); return; } port_w16s(addr, value); }
++  PORT_FI uint32_t read32(uint32_t addr) { if (uint8_t *f = port_fast(addr, 4)) { uint32_t v; std::memcpy(&v, f, 4); return port_bs32(v); } return port_r32s(addr); }
++  PORT_FI void write32(uint32_t addr, uint32_t value) { if (uint8_t *f = port_fast(addr, 4)) { const uint32_t v = port_bs32(value); std::memcpy(f, &v, 4); return; } port_w32s(addr, value); }
++  PORT_FI void write_f32(uint32_t addr, float value) { if (uint8_t *f = port_fast(addr, 4)) { uint32_t v; std::memcpy(&v, &value, 4); v = port_bs32(v); std::memcpy(f, &v, 4); return; } port_wf32s(addr, value); }
++  PORT_FI void write_f64(uint32_t addr, double value) { if (uint8_t *f = port_fast(addr, 8)) { uint64_t v; std::memcpy(&v, &value, 8); v = port_bs64(v); std::memcpy(f, &v, 8); return; } port_wf64s(addr, value); }
++  PORT_FI uint64_t read64(uint32_t addr) { if (uint8_t *f = port_fast(addr, 8)) { uint64_t v; std::memcpy(&v, f, 8); return port_bs64(v); } return port_r64s(addr); }
++  PORT_FI void write64(uint32_t addr, uint64_t value) { if (uint8_t *f = port_fast(addr, 8)) { const uint64_t v = port_bs64(value); std::memcpy(f, &v, 8); return; } port_w64s(addr, value); }
++  PORT_FI double read_f64(uint32_t addr) { if (uint8_t *f = port_fast(addr, 8)) { uint64_t v; std::memcpy(&v, f, 8); v = port_bs64(v); double d; std::memcpy(&d, &v, 8); return d; } return port_rf64s(addr); }
+ 
+   inline uint8_t *get_ptr(uint32_t addr) {
+     if (addr >= 0xE0000000 && addr < 0xE0004000) return locked_cache.data() + (addr - 0xE0000000);
+@@ -83,7 +158,7 @@
+              (paddr >= 0x0D000000 && paddr < 0x0D010000);
+   }
+ 
+-  uint8_t read8(uint32_t addr) {
++  PORT_NI uint8_t read8_slow(uint32_t addr) {
+     uint32_t paddr = addr & 0x3FFFFFFF;
+ 
+     if (is_hw_reg(paddr)) {
+@@ -98,7 +173,7 @@
+ 
+   void custom_watch(uint32_t, uint32_t, int) {}
+ 
+-  void write8(uint32_t addr, uint8_t value) {
++  PORT_NI void write8_slow(uint32_t addr, uint8_t value) {
+     custom_watch(addr, value, 8);
+     uint32_t paddr = addr & 0x3FFFFFFF;
+     if (g_watch_addr && (paddr & ~3u) == (g_watch_addr & 0x3FFFFFFC))
+@@ -114,7 +189,7 @@
+     if (ptr) *ptr = value;
+   }
+ 
+-  uint16_t read16(uint32_t addr) {
++  PORT_NI uint16_t read16_slow(uint32_t addr) {
+     uint32_t paddr = addr & 0x3FFFFFFF;
+ 
+     if (is_hw_reg(paddr)) return HW_Reg_Read16(paddr);
+@@ -124,7 +199,7 @@
+     return 0;
+   }
+ 
+-  void write16(uint32_t addr, uint16_t value) {
++  PORT_NI void write16_slow(uint32_t addr, uint16_t value) {
+     custom_watch(addr, value, 16);
+     uint32_t paddr = addr & 0x3FFFFFFF;
+     if (g_watch_addr && (paddr & ~3u) == (g_watch_addr & 0x3FFFFFFC))
+@@ -137,7 +212,7 @@
+     if (ptr) { ptr[0] = value >> 8; ptr[1] = value & 0xFF; }
+   }
+ 
+-  uint32_t read32(uint32_t addr) {
++  PORT_NI uint32_t read32_slow(uint32_t addr) {
+     uint32_t paddr = addr & 0x3FFFFFFF;
+     if (paddr == 0x0000000C) return 0; 
+ 
+@@ -150,7 +225,7 @@
+     return val;
+   }
+ 
+-  void write32(uint32_t addr, uint32_t value) {
++  PORT_NI void write32_slow(uint32_t addr, uint32_t value) {
+     custom_watch(addr, value, 32);
+     uint32_t paddr = addr & 0x3FFFFFFF;
+     if (paddr == 0x0000000C) return; 
+@@ -165,7 +240,7 @@
+   }
+ 
+   float read_f32(uint32_t addr) { uint32_t val = read32(addr); float f; std::memcpy(&f, &val, 4); return f; }
+-  void write_f32(uint32_t addr, float value) {
++  PORT_NI void write_f32_slow(uint32_t addr, float value) {
+     uint32_t paddr = addr & 0x3FFFFFFF;
+     
+     uint32_t v;
+@@ -181,7 +256,7 @@
+     }
+   }
+ 
+-  void write_f64(uint32_t addr, double value) {
++  PORT_NI void write_f64_slow(uint32_t addr, double value) {
+     uint32_t paddr = addr & 0x3FFFFFFF;
+     
+     uint64_t v;
+@@ -198,13 +273,13 @@
+     }
+   }
+ 
+-  uint64_t read64(uint32_t addr) {
++  PORT_NI uint64_t read64_slow(uint32_t addr) {
+     uint8_t *ptr = get_ptr(addr);
+     if (!ptr) return 0;
+     return ((uint64_t)ptr[0] << 56) | ((uint64_t)ptr[1] << 48) | ((uint64_t)ptr[2] << 40) | ((uint64_t)ptr[3] << 32) |
+            ((uint64_t)ptr[4] << 24) | ((uint64_t)ptr[5] << 16) | ((uint64_t)ptr[6] << 8) | ptr[7];
+   }
+-  void write64(uint32_t addr, uint64_t value) {
++  PORT_NI void write64_slow(uint32_t addr, uint64_t value) {
+     uint32_t paddr = addr & 0x3FFFFFFF;
+     if (g_watch_addr && (paddr & ~7u) == (g_watch_addr & 0x3FFFFFF8))
+       watch_hit(addr, value >> 32, 64);
+@@ -214,7 +289,7 @@
+     ptr[0] = value >> 56; ptr[1] = (value >> 48) & 0xFF; ptr[2] = (value >> 40) & 0xFF; ptr[3] = (value >> 32) & 0xFF;
+     ptr[4] = (value >> 24) & 0xFF; ptr[5] = (value >> 16) & 0xFF; ptr[6] = (value >> 8) & 0xFF; ptr[7] = value & 0xFF;
+   }
+-  double read_f64(uint32_t addr) { 
++  PORT_NI double read_f64_slow(uint32_t addr) { 
+       uint8_t *ptr = get_ptr(addr);
+       if (ptr) {
+           uint64_t val = ((uint64_t)ptr[0] << 56) | ((uint64_t)ptr[1] << 48) | ((uint64_t)ptr[2] << 40) | ((uint64_t)ptr[3] << 32) |
+@@ -225,6 +300,20 @@
+   }
+ 
+ };
++
++// Camino completo sin puntero derivado de CPUContext (asi el codigo recompilado puede tener
++// los registros del juego en registros del host alrededor de cada acceso).
++PORT_NI inline uint8_t port_r8s(uint32_t a) { return g_port_mmu->read8_slow(a); }
++PORT_NI inline uint16_t port_r16s(uint32_t a) { return g_port_mmu->read16_slow(a); }
++PORT_NI inline uint32_t port_r32s(uint32_t a) { return g_port_mmu->read32_slow(a); }
++PORT_NI inline uint64_t port_r64s(uint32_t a) { return g_port_mmu->read64_slow(a); }
++PORT_NI inline double port_rf64s(uint32_t a) { return g_port_mmu->read_f64_slow(a); }
++PORT_NI inline void port_w8s(uint32_t a, uint8_t v) { g_port_mmu->write8_slow(a, v); }
++PORT_NI inline void port_w16s(uint32_t a, uint16_t v) { g_port_mmu->write16_slow(a, v); }
++PORT_NI inline void port_w32s(uint32_t a, uint32_t v) { g_port_mmu->write32_slow(a, v); }
++PORT_NI inline void port_w64s(uint32_t a, uint64_t v) { g_port_mmu->write64_slow(a, v); }
++PORT_NI inline void port_wf32s(uint32_t a, float v) { g_port_mmu->write_f32_slow(a, v); }
++PORT_NI inline void port_wf64s(uint32_t a, double v) { g_port_mmu->write_f64_slow(a, v); }
+ 
+ struct CPUContext {
+   
+@@ -320,7 +409,7 @@
+     static thread_local HostClockCache cache;
+     // Bound virtual time to real elapsed time. Slow code retains the virtual
+     // clock; fast idle loops can no longer run audio/alarms ahead of Windows.
+-    if(wall || cache.owner!=this || cache.origin!=tb_start || inst_count<cache.inst || inst_count-cache.inst>=4096){
++    if(wall || cache.owner!=this || cache.origin!=tb_start || inst_count<cache.inst || inst_count-cache.inst>=65536){
+       const auto us=uint64_t(std::max<int64_t>(0,std::chrono::duration_cast<std::chrono::microseconds>(
+           std::chrono::steady_clock::now()-tb_start).count()));
+       cache.owner=this;cache.origin=tb_start;cache.inst=inst_count;
+@@ -387,7 +476,16 @@
+     }
+   }
+ 
+-  void psq_load(uint32_t frD, uint32_t addr, uint32_t W, uint32_t I) {
++  // tools/gx-pipeline: tipo float sin escala (el mas comun) en linea; los cuantizados, aparte.
++  PORT_FI void psq_load(uint32_t frD, uint32_t addr, uint32_t W, uint32_t I) {
++    if (((gqr[I] >> 16) & 0x7) == 0) { fpr[frD] = mmu.read_f32(addr); ps1[frD] = W ? 1.0 : (double)mmu.read_f32(addr + 4); return; }
++    port_psq_ls(*this, frD, addr, W, I);
++  }
++  PORT_FI void psq_store(uint32_t frS, uint32_t addr, uint32_t W, uint32_t I) {
++    if ((gqr[I] & 0x7) == 0) { mmu.write_f32(addr, (float)fpr[frS]); if (W == 0) mmu.write_f32(addr + 4, (float)ps1[frS]); return; }
++    port_psq_ss(*this, frS, addr, W, I);
++  }
++  PORT_NI void psq_load_slow(uint32_t frD, uint32_t addr, uint32_t W, uint32_t I) {
+     uint32_t gqr_val = gqr[I];
+     uint32_t ld_type = (gqr_val >> 16) & 0x7;
+     uint32_t ld_scale = (gqr_val >> 24) & 0x3F;
+@@ -423,7 +521,7 @@
+     }
+   }
+ 
+-  void psq_store(uint32_t frS, uint32_t addr, uint32_t W, uint32_t I) {
++  PORT_NI void psq_store_slow(uint32_t frS, uint32_t addr, uint32_t W, uint32_t I) {
+     uint32_t gqr_val = gqr[I];
+     uint32_t st_type = gqr_val & 0x7;
+     uint32_t st_scale = (gqr_val >> 8) & 0x3F;
+@@ -604,6 +702,8 @@
+ void add_recompiled_range(uint32_t start, uint32_t end);
+ bool in_recompiled_code(uint32_t pc);
+ 
++PORT_NI inline void port_psq_ls(CPUContext &c PORT_NOESC, uint32_t d, uint32_t a, uint32_t w, uint32_t i) { c.psq_load_slow(d, a, w, i); }
++PORT_NI inline void port_psq_ss(CPUContext &c PORT_NOESC, uint32_t d, uint32_t a, uint32_t w, uint32_t i) { c.psq_store_slow(d, a, w, i); }
+ extern bool g_trace_calls;
+ void trace_call(uint32_t func_addr, CPUContext& ctx);
+ 
+@@ -613,5 +713,19 @@
+ void note_null_call(uint32_t site, uint32_t lr);
+ 
+ } 
+-} 
+-
++}
++
++// Envoltorios para el codigo recompilado: misma funcion, llamada declarada sin captura del contexto.
++namespace nwii::runtime {
++template <class R, class... A> PORT_FI auto port_ne(R (*f)(CPUContext &, A...)) { return reinterpret_cast<R (*)(CPUContext & PORT_NOESC, A...)>(f); }
++template <class R, class... A> PORT_FI auto port_ne(R (*f)(const CPUContext &, A...)) { return reinterpret_cast<R (*)(const CPUContext & PORT_NOESC, A...)>(f); }
++PORT_FI bool port_ne_ppc(CPUContext &c) { return reinterpret_cast<bool (*)(CPUContext & PORT_NOESC)>(&process_pending_callbacks)(c); }
++PORT_FI bool port_ne_syscall(CPUContext &c) { return reinterpret_cast<bool (*)(CPUContext & PORT_NOESC)>(&handle_syscall)(c); }
++// Diagnostico: entradas al interprete desde el codigo compactado (direccion de reentrada sin etiqueta).
++inline uint64_t g_port_interp_steps = 0;
++// NWII_DIRECT_CALLS=0: las llamadas indirectas y saltos de cola vuelven al despachador como antes.
++inline const bool g_port_dcalls = [] { const char* e = std::getenv("NWII_DIRECT_CALLS"); return !(e && e[0] == '0'); }();
++PORT_FI void port_ne_interp(CPUContext &c) { ++g_port_interp_steps; reinterpret_cast<void (*)(CPUContext & PORT_NOESC)>(&interpret_step)(c); }
++PORT_FI void port_ne_trace(uint32_t a, CPUContext &c) { reinterpret_cast<void (*)(uint32_t, CPUContext & PORT_NOESC)>(&trace_call)(a, c); }
++}
++

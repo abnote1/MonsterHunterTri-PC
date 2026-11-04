@@ -37,3 +37,8 @@ cache_sombreadores.bin
 /tools/gx-pipeline/usb_device.cpp
 /MonsterHunterTri-Portable/
 /MonsterHunterTri-Kit*/
+/tools/gx-pipeline/output_1.cpp
+/tools/gx-pipeline/cache_loop.cpp
+# Unidades del juego compactadas (codigo generado del juego)
+/tools/gx-pipeline/compacto/
+/tools/gx-pipeline/*.png
