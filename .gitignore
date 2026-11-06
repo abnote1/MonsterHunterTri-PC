@@ -42,3 +42,8 @@ cache_sombreadores.bin
 # Unidades del juego compactadas (codigo generado del juego)
 /tools/gx-pipeline/compacto/
 /tools/gx-pipeline/*.png
+# Modo online: proyectos ajenos que se descargan aparte y datos de los servidores
+/servidor/MH3SP/
+/servidor/python/
+/servidor/*.log
+/servidor/wfc_perfiles.json

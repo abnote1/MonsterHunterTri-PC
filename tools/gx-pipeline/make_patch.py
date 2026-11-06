@@ -1745,12 +1745,67 @@ t=t[:_ci]+_cl0+"""  static const bool enabled=std::getenv("NWII_CACHE_SCALAR")==
 """+t[_cj:]
 _out('cache_loop.cpp', '// tools/gx-pipeline: copia de src/core/cache_loop.cpp generada por make_patch.py (bucles de cache de golpe).\n'+t)
 
+# --- renderer_gl.cpp: mezcla de GX completa (operaciones logicas, alfa constante, EFB sin alfa).
+# El codigo nuevo esta en apply_blend.inc (sustituye a ApplyBlend). Ver la cabecera de ese archivo.
+t=_reread('renderer_gl.cpp')
+_ab0=t.index('static void ApplyBlend() {\n')
+_ab1=t.index('\n}\n', _ab0)+3
+_ab_orig=t[_ab0:_ab1]
+_ab_new=(pathlib.Path(__file__).parent/'apply_blend.inc').read_text().replace('\r\n','\n')
+# volcado de un cuadro con F10 (frame_dump.inc), justo despues de ApplyBlend
+_ab_new+=(pathlib.Path(__file__).parent/'frame_dump.inc').read_text().replace('\r\n','\n')
+t=t[:_ab0]+_ab_new+t[_ab1:]
+_hooks=[('#include <glad/glad.h>\n', '#include <glad/glad.h>\n#include <ctime>   // @nohash\n#ifdef _WIN32   // @nohash\n#include <direct.h>   // @nohash\n#else   // @nohash\n#include <sys/stat.h>   // @nohash\n#endif   // @nohash\n'),
+        ('    PortShaderPrecompile();\n', '    PortShaderPrecompile();\n    if (port_menu::g_dump_request.exchange(false)) { s_dump = true; DumpBegin(); }   // @nohash\n'),
+        ('        DrawPrimitive(cmd);\n', '        if (s_dump) { if (s_batch_open) { FlushBatch(); s_batch_open = false; } DumpBeforeDraw(cmd); }   // @nohash\n        DrawPrimitive(cmd);\n        if (s_dump) { if (s_batch_open) { FlushBatch(); s_batch_open = false; } DumpAfterDraw(); }   // @nohash\n'),
+        ('ApplyBPRegister((uint8_t)cmd.reg, cmd.val);\n', 'ApplyBPRegister((uint8_t)cmd.reg, cmd.val);\n        if (s_dump && cmd.reg == 0x52) DumpEvent((cmd.val & 0x4000) ? "COPIA A PANTALLA" : "COPIA A TEXTURA", g_state.efbCopyDest, g_state.efbW, g_state.efbH);   // @nohash\n'),
+        ('    nwii::runtime::hle::TextureCache::get().report_statistics();\n', '    DumpEnd();   // @nohash\n    nwii::runtime::hle::TextureCache::get().report_statistics();\n')]
+for _a,_b in _hooks:
+    assert t.count(_a)==1, _a
+    t=t.replace(_a,_b)
+# "Resplandor desactivado" no omitia la suma del bloom: SetupDrawState volvia sin marcar el lote como
+# omitido y el cuadro se dibujaba igual con el estado anterior (imagen quemada aun sin resplandor).
+_bl_old='{ if (s_fl_on) ++s_fl_bloom; return; }'
+_bl_new='{ if (s_fl_on) ++s_fl_bloom; s_skip_draw = true; return; }'
+assert t.count(_bl_old)==1, 'omision del bloom'
+t=t.replace(_bl_old,_bl_new)
+_hash_reverts=[(_bl_new,_bl_old)]
+_dr='  glDrawArrays(GL_TRIANGLES, first_vertex, s_batch.size());\n'
+assert t.count(_dr)==1, 'glDrawArrays lote'
+t=t.replace(_dr, _dr+'  glDisable(GL_COLOR_LOGIC_OP);   // las operaciones logicas solo para este lote\n')
+_out('renderer_gl.cpp', t)
+
 # --- huella del generador de sombreadores para cache_sombreadores.bin (ver PortShaderBuildId) ---
 import hashlib as _hl
 _rgp = pathlib.Path(__file__).parent / 'renderer_gl.cpp'
 _tgp = pathlib.Path(__file__).parent / 'tev_shader_gen.cpp'
 _rgb = _rgp.read_bytes()
 assert _rgb.count(b'__PORT_SHADER_ID__') == 1, 'huella sombreadores'
-_sid = _hl.sha1(_rgb + _tgp.read_bytes()).hexdigest()[:16]
+# La mezcla (apply_blend.inc) no cambia los sombreadores: la huella se calcula sobre el texto
+# anterior a ese cambio para no invalidar cache_sombreadores.bin.
+_rgh = _rgb.replace(_ab_new.replace('\n','\r\n').encode(), _ab_orig.replace('\n','\r\n').encode())
+_rgh = _rgh.replace(b'  glDisable(GL_COLOR_LOGIC_OP);   // las operaciones logicas solo para este lote\r\n', b'')
+_rgh = b''.join(l for l in _rgh.split(b'\n') and _rgh.splitlines(keepends=True) if b'// @nohash' not in l)
+for _hn,_ho in _hash_reverts: _rgh=_rgh.replace(_hn.encode(),_ho.encode())
+_sid = _hl.sha1(_rgh + _tgp.read_bytes()).hexdigest()[:16]
 _rgp.write_bytes(_rgb.replace(b'__PORT_SHADER_ID__', _sid.encode()))
 print('ok huella de sombreadores ' + _sid)
+
+# --- ios.cpp: red del Wii para el modo online (port_net.cpp): /dev/net/* y sondeo de lo pendiente
+t=_reread('ios.cpp')
+_rg="  nwii::runtime::devices::register_all();\n"
+assert t.count(_rg)==1, 'register_all'
+t=t.replace(_rg, _rg+"  ::PortNetRegister();\n")
+_pn="bool process_pending_callbacks(CPUContext &ctx) {\n  GX_WGPIPE_Flush();\n"
+assert t.count(_pn)==1, 'ppc red'
+t=t.replace(_pn, _pn+"  if (g_port_net_pending) ::PortNetPoll(ctx, ctx.pc == 0x804D3E38);\n")
+t=("namespace nwii::runtime { struct CPUContext; }\nextern int g_port_net_pending;\nvoid PortNetRegister();\n"
+   "void PortNetPoll(nwii::runtime::CPUContext&, bool);\n")+t
+_out('ios.cpp', t)
+
+# --- os_hle_stubs.cpp: sscanf del juego (0x8045F37C) quedo convertido en OSReport -> port_libc.cpp
+t=_reread('os_hle_stubs.cpp')
+_osr='extern "C" void OSReport(CPUContext &ctx) {\n'
+assert t.count(_osr)==1, 'OSReport'
+t=t.replace(_osr, 'void PortGuestSscanf(nwii::runtime::CPUContext&);\n'+_osr+'  if (ctx.pc == 0x8045F37Cu) { ::PortGuestSscanf(ctx); return; }   // sscanf, no OSReport\n')
+_out('os_hle_stubs.cpp', t)

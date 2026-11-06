@@ -20,6 +20,7 @@ inline std::atomic<uint64_t> g_result_serial{0};   // cambia con cada resultado 
 inline std::atomic<bool> g_gx_after_load{false};   // el hilo principal descarta el cuadro anterior
 inline std::atomic<int>  g_lang{-1};                // idioma del juego (port_lang.h); -1 = el de la configuracion guardada
 inline std::atomic<float> g_hfov_scale{1.0f};
+inline std::atomic<bool> g_dump_request{false};  // F10: volcar el siguiente cuadro (frame_dump.inc)
 inline std::atomic<bool> g_force_clear{false};   // borrar el EFB al empezar el siguiente dibujo (redibujo del menu)
 // Perfil del cuadro (registro de tirones): lo que hizo el dibujo de este cuadro.
 inline std::atomic<uint32_t> g_prof_compiles{0};    // sombreadores compilados

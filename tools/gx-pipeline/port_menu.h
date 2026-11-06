@@ -10,6 +10,7 @@
 #include "port_cloud.h"
 #include "port_lang.h"
 #include "runtime/presentation.h"
+bool PortNetOnline();   // port_net.cpp: hay una conexion TCP abierta con el servidor
 #include "runtime/config.h"
 #include <SDL.h>
 #include <glad/glad.h>
@@ -545,8 +546,11 @@ class Menu {
   void Open() {
     if (open_) return;
     open_ = true; wait_release_ = false; page_ = kMain; sel_ = 0;
-    g_input_blocked.store(true); g_paused.store(true);
-    std::puts("[Menu] abierto (juego en pausa)");
+    // Conectado al online no se pausa: el servidor cortaria la conexion al no recibir
+    // respuesta a sus comprobaciones de linea (ReqLineCheck cada 30 s).
+    const bool pause = !::PortNetOnline();
+    g_input_blocked.store(true); g_paused.store(pause);
+    std::puts(pause ? "[Menu] abierto (juego en pausa)" : "[Menu] abierto (online: el juego sigue)");
   }
   void Close() {
     if (!open_) return;
@@ -561,6 +565,10 @@ class Menu {
   }
   // Devuelve true si el evento es del menu (no se pasa al juego).
   bool HandleEvent(const SDL_Event& e) {
+    if (e.type == SDL_KEYDOWN && !e.key.repeat && e.key.keysym.scancode == SDL_SCANCODE_F10) {
+      g_dump_request.store(true);   // volcado del siguiente cuadro (logs\\volcado-*)
+      return true;
+    }
     if (e.type == SDL_KEYDOWN && !e.key.repeat && e.key.keysym.scancode == SDL_SCANCODE_P) {
       if (open_) Close(); else Open();
       return true;

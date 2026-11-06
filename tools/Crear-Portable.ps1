@@ -78,6 +78,24 @@ Set-Content -Path (Join-Path $Destino 'monster-hunter-tri-native.toml') -Value $
 # El permiso de Dropbox esta cifrado para este usuario de Windows: no sirve en otro equipo
 foreach ($f in 'nube_dropbox.dat', 'nube_estado.ini', 'credenciales_google.json') { Remove-Item (Join-Path $Destino $f) -ErrorAction SilentlyContinue }
 
+# Modo online (la ciudad): servidores locales (servicios de Nintendo emulados + MH3SP, AGPL) y el
+# Python embebido de Windows con el que el juego los abre solo al entrar en el online.
+function Copiar-Servidores([string]$Dst, [switch]$ConDatos) {
+  $srvSrc = Join-Path $root 'servidor'
+  if (-not (Test-Path $srvSrc)) { Write-Warning 'No hay carpeta servidor: el kit ira sin modo online.'; return }
+  $ex = @('/XD', '__pycache__', 'logs', '/XF', '*.log', '*.tmp')
+  if (-not $ConDatos) { $ex += @('*.db', 'wfc_perfiles.json') }   # sin cuentas ni perfiles de nadie
+  & robocopy $srvSrc (Join-Path $Dst 'servidor') /E /R:1 /W:1 /NFL /NDL /NJH /NJS /NP @ex | Out-Null
+  if ($LASTEXITCODE -ge 8) { throw "Error copiando servidor (robocopy $LASTEXITCODE)" }
+  $global:LASTEXITCODE = 0
+  foreach ($f in 'online.ini', 'Servidor online.cmd', 'servidor_online_deck.sh') {
+    if (Test-Path (Join-Path $root $f)) { Copy-Item (Join-Path $root $f) $Dst -Force }
+  }
+  if (-not (Test-Path (Join-Path $Dst 'servidor\python\python.exe'))) { Write-Warning 'Falta servidor\python: el online necesitara Python instalado.' }
+  Write-Host 'Copiado: modo online (servidor)'
+}
+Copiar-Servidores $Destino -ConDatos   # tu cuenta del servidor (Capcom ID) va contigo
+
 # 5) Lanzador con registro (para mandar a Claude si algo falla)
 $cmd = @'
 @echo off

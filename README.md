@@ -21,6 +21,9 @@ Parte de una recompilación estática hecha con [NWiiRecomp](#requisitos) y aña
 | Vídeos THP | `port_thp.cpp`, `port_thp_decode.h` | Decodificador JPEG nativo de los vídeos en un hilo aparte: vídeos a velocidad completa y sin cortes de audio. Se verifica contra el decodificador del juego antes de usarse. |
 | Arreglos gráficos | `make_patch.py` | Borrados del EFB con las máscaras de color/alfa/profundidad como la consola, cuadros con varias copias a pantalla (teclado virtual, diálogos en pausa), copias EFB opacas, escalado sin rayas. |
 | Rendimiento | `compactar.py`, `include-patches/cpu_context.h.diff`, `port_fastpoll.h`, `port_mem.cpp`, `port_perf.*`, `pipeline_tail.inc` | Unidades generadas compactadas (solo las entradas reales en cada función), accesos a memoria por tabla y sin alias, llamadas indirectas directas, sondeo de eventos barato, memcpy/memset nativos, bucles de caché de golpe, reparto de núcleos y descanso en ocioso. Presentación al ritmo del VI del juego (sin microtirones). En un Ryzen 5 1600X la zona con más monstruos (~15.000 dibujos por cuadro) va a 30 FPS estables (antes ~20). |
+| Modo online (la ciudad) | `port_net.cpp`, `servidor/servidor_wfc.py`, `online.ini` | Red del Wii (IOS `/dev/net/*`) sobre sockets del PC: SSL sin cifrar hacia un servidor propio, DNS redirigido. `servidor_wfc.py` emula lo mínimo de Nintendo WFC (NAS, disponibilidad, GameSpy) y [MH3SP](https://github.com/sepalani/MH3SP) hace de servidor de Capcom. El juego abre los dos solo al entrar en el online (también en la Steam Deck, desde el Modo Juego) y los cierra al salir. |
+| Biblioteca C del juego | `port_libc.cpp` | El recompilador convirtió `sscanf` (0x8045F37C) en `OSReport`: el online fallaba con el error 0x800A0003. `sscanf` propio sobre la memoria del juego. |
+| Mezcla y diagnóstico | `apply_blend.inc`, `frame_dump.inc` | Mezcla GX completa (operaciones lógicas, alfa constante, EFB sin alfa). **F10** guarda un cuadro paso a paso en `logs\volcado-*` (estado de cada dibujo e imágenes del EFB). Gracias a eso se vio que la opción "sin resplandor" no omitía la suma del bloom (imagen quemada). |
 | Kit de instalación | `tools/kit/`, `tools/Crear-Kit.ps1`, `Crear kit.cmd` | Otra persona pone su ISO y su paquete HD y `Instalar.cmd` le monta el port. |
 | Carpeta portable | `tools/Crear-Portable.ps1`, `Crear carpeta portable.cmd` | Copia el port completo a otra carpeta para llevarlo a otro PC o a la Steam Deck. |
 
@@ -66,6 +69,23 @@ Sin argumentos el ejecutable usa `game\DATA` y el `.toml` de su carpeta.
 Controles, menú y configuración de Dropbox: [CONTROLES.md](CONTROLES.md).
 Steam Deck: añade `MonsterHunterTri.exe` como juego que no es de Steam con Proton Experimental
 (instrucciones en `tools/kit/LEEME.txt`).
+
+### Modo online
+
+El juego se conecta a servidores que corren en tu propio equipo (`online.ini`: `servidor=127.0.0.1`).
+Para tenerlos (no se suben aquí, son de otros proyectos):
+
+1. **MH3SP** (AGPL v3) en `servidor\MH3SP`, rama `dev`:
+   `git clone -b dev https://github.com/sepalani/MH3SP servidor/MH3SP`.
+   En su `config.ini` pon `UseSSL = OFF` en `[OPN]` y `LogToWindow = OFF` en todas las secciones.
+2. **Python** para Windows en `servidor\python` (el paquete *embeddable* de python.org, 3.12) y en su
+   `python312._pth` añade las líneas `..` y `..\MH3SP`. Sin él, el port usa el Python instalado.
+
+Al entrar en el online el port abre `servidor_wfc.py` y `master_server.py` sin ventana (salida en
+`servidor\servidores.log`) si no hay nada escuchando, y los cierra al salir. `arrancar_servidores=0`
+lo desactiva (entonces: `Servidor online.cmd`, o `bash servidor_online_deck.sh` en la Deck).
+Con el online conectado el menú del port no pausa el juego. Para jugar con otras personas, quien
+hospeda abre los puertos TCP 8200-8203 y 9000 y UDP 27900, y los demás ponen su IP en `servidor=`.
 
 ### Diagnóstico
 

@@ -45,6 +45,22 @@ a la Deck (por USB, microSD o red), por ejemplo a /home/deck/Games/MonsterHunter
    pantalla completa. Si no se mantiene a 30 FPS, baja a 1x en P > Gráficos.
 5. Si algo falla: Propiedades > Opciones de lanzamiento: PROTON_LOG=1 %command%
 
+MODO ONLINE (LA CIUDAD)
+-----------------------
+Los servidores oficiales cerraron. El port trae un servidor propio que corre en tu
+equipo (servidor\: MH3SP + servicios de Nintendo emulados, con su propio Python en
+servidor\python): al entrar en el online desde el juego se abre solo, sin ventanas,
+y se cierra al salir. Funciona igual en la Steam Deck, desde el Modo Juego.
+- La primera conexión puede tardar unos segundos más.
+- Con el online conectado, el menú del port no pausa el juego (el servidor cortaría
+  la conexión). No uses el guardado rápido estando conectado.
+- Si algo falla, la salida de los servidores queda en servidor\servidores.log.
+- online.ini: servidor=127.0.0.1 es tu propio equipo. Con arrancar_servidores=0 los
+  abres tú a mano con "Servidor online.cmd" (PC) o "bash servidor_online_deck.sh" (Deck).
+- De momento cada uno juega en su propio servidor (solo). Jugar con otros requiere que
+  uno abra en su router los puertos TCP 8200-8203 y 9000 y UDP 27900, y los demás
+  pongan su IP en online.ini.
+
 GUARDADO EN LA NUBE (DROPBOX)
 -----------------------------
 Opcional. Cada persona usa su propia app de Dropbox: los pasos están en
@@ -62,5 +78,8 @@ CRÉDITOS Y LICENCIAS
 - herramientas\DolphinTool.exe y game\dsp_coef.bin vienen del emulador Dolphin
   (GPL v2 o posterior): https://github.com/dolphin-emu/dolphin
   Licencia en herramientas\Dolphin-COPYING.txt.
+- servidor\MH3SP es MH3SP (https://github.com/sepalani/MH3SP), licencia AGPL v3
+  (servidor\MH3SP\LICENSE). servidor\python es Python 3.12 para Windows
+  (https://www.python.org), licencia PSF (servidor\python\LICENSE.txt).
 - El paquete de texturas HD es obra de sus autores: descárgalo de su página
   oficial y respeta sus condiciones.
